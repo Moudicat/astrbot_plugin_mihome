@@ -1,6 +1,6 @@
 name: astrbot_plugin_mihome
-desc: 米家控制插件
-help: 支持自然语言调用的米家插件
-version: v1.0.0
-author: RyanVaderAN
-repo: https://github.com/674537331/astrbot_plugin_mihome
+desc: 米家设备云端控制插件 (基于 MiService)
+help: "发送 /刷新米家 获取设备列表，发送 /控制米家 [设备名] [开/关] 控制设备"
+version: v5.9
+author: RyanVaderAn
+repo: "https://github.com/674537331/astrbot_plugin_mihome"
