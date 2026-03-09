@@ -1,0 +1,6 @@
+name: astrbot_plugin_mihome
+desc: 米家控制插件
+help: 支持自然语言调用的米家插件
+version: v1.0.0
+author: RyanVaderAN
+repo: https://github.com/674537331/astrbot_plugin_mihome
