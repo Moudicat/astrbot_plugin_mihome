@@ -2,7 +2,13 @@
 
 基于 [AstrBot](https://github.com/Soulter/AstrBot) 框架开发的米家智能家居云端控制插件。
 
-本插件经历了从“模拟终端”到“沙盒隔离”的工程化重构，旨在为用户提供**最安全、最直观、零污染**的米家设备控制体验。
+旨在为用户提供**最安全、最直观、零污染**的米家设备控制体验。
+
+<div align="center">
+
+[![Moe Counter](https://count.getloli.com/get/@astrbot_plugin_mihome?theme=moebooru)](https://github.com/674537331/astrbot_plugin_mihome)
+
+</div>
 
 ---
 
