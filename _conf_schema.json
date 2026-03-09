@@ -2,7 +2,7 @@
   "device_map": {
     "type": "text",
     "description": "设备别名与 DID 映射表 (JSON)",
-    "hint": "得益于 mijiaAPI 强大的底层封装，现在只需填入设备名称和对应的 DID 即可，彻底告别复杂的 siid 和 piid！\n示例:\n{\n  \"净化器\": \"685609385\",\n  \"风扇\": \"740409322\",\n  \"空调\": \"646717969\"\n}",
+    "hint": "填写设备别名与对应 DID 的映射关系，用于简化控制指令。\n示例:\n{\n  \"净化器\": \"685609385\",\n  \"落地扇\": \"740409322\"\n}",
     "default": "{}",
     "editor_mode": true,
     "editor_language": "json"
