@@ -90,8 +90,9 @@ class MiHomeClient:
         
         try:
             async with self._api_lock:
+                # 🚀 致命修复 1：加上 "-u" 参数，强制子进程关闭流缓冲，实时输出到管道！
                 self._login_process = await asyncio.create_subprocess_exec(
-                    sys.executable, self._worker_script, self.data_manager.get_auth_path(),
+                    sys.executable, "-u", self._worker_script, self.data_manager.get_auth_path(),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT
                 )
@@ -109,15 +110,19 @@ class MiHomeClient:
                         text = chunk.decode('utf-8', errors='replace')
                         full_buffer += text
                         
+                        # 🚀 致命修复 2：打印 Worker 原始输出，直接抓取真实现场！
+                        logger.info(f"[MiHome][WorkerOutput] {text!r}")
+                        
                         if not qr_found:
+                            # 🚀 致命修复 3：放宽正则，抛弃前缀中文依赖，暴力提取小米认证链接！
                             match = re.search(
-                                r'也可以访问链接查看二维码图片:\s*(https://account\.xiaomi\.com[^\s]+)',
+                                r'(https://account\.xiaomi\.com[^\s]+)',
                                 full_buffer,
                             )
                             if match:
                                 qr_found = True
                                 qr_url = match.group(1)
-                                logger.info("[MiHome] 已成功从沙盒流中截获二维码链接。")
+                                logger.info(f"[MiHome] 已成功截获底层登录链接: {qr_url}")
                                 if asyncio.iscoroutinefunction(qr_callback):
                                     await qr_callback(qr_url)
                                 else:
@@ -136,7 +141,7 @@ class MiHomeClient:
                         pass
                     
                     if not qr_found:
-                        err_msg = "在120秒内未能提取到登录链接（可能因云端拥堵、网络延迟，或底层库输出格式变更）"
+                        err_msg = "在120秒内未能提取到登录链接（可能因网络阻塞，或底层库在无TTY下改变了输出）"
                         self.data_manager.update_state(last_login_error=err_msg)
                         return {"status": "qrcode_not_found"}
                     else:
@@ -151,7 +156,7 @@ class MiHomeClient:
                     self.api = mijiaAPI(self.data_manager.get_auth_path())
                     
                     if not qr_found:
-                        logger.info("[MiHome] 沙盒执行成功且未产生二维码，判定为凭证已存在或直接通过。")
+                        logger.info("[MiHome] 沙盒执行成功且未产生链接，判定为凭证已存在。")
                         return {"status": "already_logged_in"}
                     return {"status": "success"}
                 else:
