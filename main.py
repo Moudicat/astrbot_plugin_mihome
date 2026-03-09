@@ -23,7 +23,7 @@ class MiHomeAPIError(MiHomeException):
 class MiHomeTimeoutError(MiHomeException):
     pass
 
-@register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v5.4")
+@register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v5.6")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -73,7 +73,8 @@ class MiHomeControlPlugin(Star):
 
         valid_map = {}
         for name, cfg in parsed.items():
-            name_clean = name.strip()
+            # 防御性编程：强制转换为字符串，防止纯数字键名引发异常
+            name_clean = str(name).strip()
             if not name_clean:
                 continue
                 
@@ -201,14 +202,43 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     @filter.command("控制米家")
-    async def control_mihome_device(self, event: AstrMessageEvent, *, query: str = ""):
+    async def control_mihome_device(
+        self, 
+        event: AstrMessageEvent, 
+        *, 
+        query: str = "", 
+        args=None, 
+        **kwargs
+    ):
         """控制米家设备 (仅限管理员私聊)"""
         device_map = self._parse_device_map()
         if not device_map:
             yield event.plain_result("❌ 配置为空或格式错误，请前往 WebUI 检查 `device_map`。")
             return
 
-        parts = query.strip().split()
+        # 1) 优先使用 query
+        raw_input = query.strip() if isinstance(query, str) else ""
+
+        # 2) 兼容 AstrBot 某些版本传入 args
+        if not raw_input and args:
+            if isinstance(args, str):
+                raw_input = args.strip()
+            elif isinstance(args, (list, tuple)):
+                raw_input = " ".join(str(x).strip() for x in args if str(x).strip())
+            else:
+                raw_input = str(args).strip()
+
+        # 3) 最后 fallback 到原始消息文本
+        if not raw_input:
+            msg = event.message_str.strip()
+            if msg.startswith("/控制米家"):
+                raw_input = msg[len("/控制米家"):].strip()
+            elif msg.startswith("控制米家"):
+                raw_input = msg[len("控制米家"):].strip()
+            else:
+                raw_input = msg
+
+        parts = raw_input.split()
         if len(parts) < 2:
             yield event.plain_result("❌ 格式错误。正确用法：/控制米家 [设备别名] [开/关]")
             return
