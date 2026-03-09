@@ -20,14 +20,9 @@ from .data_manager import MiHomeDataManager
 LOGIN_IDLE = "idle"
 LOGIN_RUNNING = "running"
 
-class MiHomeClientError(Exception):
-    pass
-
-class MiHomeAuthError(MiHomeClientError):
-    pass
-
-class MiHomeControlError(MiHomeClientError):
-    pass
+class MiHomeClientError(Exception): pass
+class MiHomeAuthError(MiHomeClientError): pass
+class MiHomeControlError(MiHomeClientError): pass
 
 class MiHomeClient:
     def __init__(self, data_manager: MiHomeDataManager):
@@ -40,7 +35,7 @@ class MiHomeClient:
 
     def _check_idle(self):
         if self._login_status != LOGIN_IDLE:
-            raise MiHomeClientError("登录沙盒正在运行中，请等待其结束或超时后再试。")
+            raise MiHomeClientError("登录沙盒正在运行中。")
 
     async def get_login_status(self) -> Dict[str, Any]:
         state = self.data_manager.load_state()
@@ -49,44 +44,67 @@ class MiHomeClient:
             "login_in_progress": self._login_status != LOGIN_IDLE,
             "last_login_at": state.get("last_login_at", ""),
             "last_login_error": state.get("last_login_error", ""),
+            "last_shared_error": state.get("last_shared_error", ""),
             "last_control_error": state.get("last_control_error", ""),
             "last_control_device": state.get("last_control_device", ""),
         }
 
     async def logout(self) -> bool:
+        """
+        核心修正：无条件重置现场，不依赖文件删除结果。
+        """
         if self._login_process and self._login_process.returncode is None:
             try:
                 self._login_process.kill()
                 await self._login_process.wait()
-            # 问题 2 修复：不再裸吞，明确排除系统级异常
-            except ProcessLookupError: pass
-            except Exception: pass
-            finally: self._login_process = None
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.warning(f"[MiHome] 强制中止登录进程失败: {e}")
+            finally:
+                self._login_process = None
 
         self._login_status = LOGIN_IDLE 
+        # 尝试清理文件
         ok = self.data_manager.clear_auth_file()
+        # 刷新 API 实例
         self.api = mijiaAPI(self.data_manager.get_auth_path())
-        if ok:
-            self.data_manager.update_state(last_login_at="", last_login_error="", last_control_error="", last_control_device="")
+        
+        # 🚀 无论文件是否存在，清空所有历史报错状态
+        self.data_manager.update_state(
+            last_login_at="", 
+            last_login_error="", 
+            last_shared_error="",
+            last_control_error="", 
+            last_control_device=""
+        )
         return ok
 
     async def login(self, qr_callback: Union[Callable[[str], Awaitable[None]], Callable[[str], None]]) -> Dict[str, Any]:
-        if self._login_status != LOGIN_IDLE: return {"status": "in_progress"}
+        if self._login_status != LOGIN_IDLE:
+            return {"status": "in_progress"}
+        
+        logger.info(f"[MiHome] 启动登录沙盒进程 -> {self._worker_script}")
         self._login_status = LOGIN_RUNNING
         qr_found, full_buffer = False, ""
+        
         try:
             async with self._api_lock:
-                self._login_process = await asyncio.create_subprocess_exec(sys.executable, "-u", self._worker_script, self.data_manager.get_auth_path(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-                if self._login_process.stdout is None: raise MiHomeClientError("管道不可用")
+                self._login_process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-u", self._worker_script, self.data_manager.get_auth_path(),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+                )
+                if self._login_process.stdout is None:
+                    raise MiHomeClientError("Stdout 管道损坏")
                 
                 async def read_stdout():
                     nonlocal qr_found, full_buffer
                     while True:
                         chunk = await self._login_process.stdout.read(256)
-                        if not chunk: break
+                        if not chunk:
+                            break
                         text = chunk.decode('utf-8', errors='replace')
                         full_buffer += text
-                        logger.debug(f"[MiHome][WorkerOutput] {text!r}")
                         
                         if not qr_found:
                             compact = full_buffer.replace("\r", "").replace("\n", "")
@@ -95,9 +113,11 @@ class MiHomeClient:
                                 url = match.group(1)
                                 if "ticket=" in url and "dc=" in url and "sid=" in url:
                                     qr_found = True
-                                    logger.info(f"[MiHome] 成功截获完整登录链接: {url}")
-                                    if asyncio.iscoroutinefunction(qr_callback): await qr_callback(url)
-                                    else: qr_callback(url)
+                                    logger.info(f"[MiHome] 成功提取完整登录链接。")
+                                    if asyncio.iscoroutinefunction(qr_callback):
+                                        await qr_callback(url)
+                                    else:
+                                        qr_callback(url)
                 
                 try:
                     await asyncio.wait_for(asyncio.gather(self._login_process.wait(), read_stdout()), timeout=120.0)
@@ -105,10 +125,11 @@ class MiHomeClient:
                     try:
                         self._login_process.kill()
                         await self._login_process.wait()
-                    except ProcessLookupError: pass
-                    except Exception: pass
-                    
-                    msg = "等待扫码确认超时 (120秒)" if qr_found else "未能在超时前提取到登录链接"
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        pass
+                    msg = "授权确认已超时 (120秒)" if qr_found else "超时未能提取登录链接"
                     self.data_manager.update_state(last_login_error=msg)
                     return {"status": "timeout" if qr_found else "qrcode_not_found"}
                 
@@ -118,6 +139,7 @@ class MiHomeClient:
                     return {"status": "success" if qr_found else "already_logged_in"}
                 else:
                     err = full_buffer[-800:].strip()
+                    logger.error(f"[MiHome] 沙盒异常退出: {err}")
                     self.data_manager.update_state(last_login_error=err)
                     return {"status": "error", "message": err}
         except Exception as e:
@@ -133,17 +155,24 @@ class MiHomeClient:
             async with self._api_lock:
                 await asyncio.to_thread(self.api.login)
                 own = await asyncio.to_thread(self.api.get_devices_list)
-                if not isinstance(own, list): own = []
+                if not isinstance(own, list):
+                    own = []
                 
                 shared = []
+                shared_error = ""  # 🚀 修正点 1：本地变量初始化
+                
                 if hasattr(self.api, "get_shared_devices_list"):
                     try:
                         shared = await asyncio.to_thread(self.api.get_shared_devices_list)
-                        if not isinstance(shared, list): shared = []
+                        if not isinstance(shared, list):
+                            shared = []
+                        shared_error = "" # 🚀 修正点 1：成功则清空错误字符串
                     except Exception as e:
-                        # 问题 4：诊断阶段暂时允许回写，方便查看具体报错
-                        logger.warning(f"[MiHome] 获取共享设备列表失败: {e}")
-                        self.data_manager.update_state(last_login_error=f"共享设备拉取失败: {e}")
+                        shared_error = f"共享列表获取异常: {e}"
+                        logger.warning(f"[MiHome] {shared_error}")
+                
+                # 🚀 无论成功还是失败，都更新状态，确保旧错误不残留
+                self.data_manager.update_state(last_shared_error=shared_error)
                 
                 merged = {}
                 for d in (own + shared):
@@ -157,7 +186,7 @@ class MiHomeClient:
             self.data_manager.update_state(last_login_error=f"云端接口异常: {e}")
             raise MiHomeClientError(str(e)) from e
         except Exception as e:
-            self.data_manager.update_state(last_login_error=f"拉取设备列表时未知异常: {e}")
+            self.data_manager.update_state(last_login_error=f"系统级同步异常: {e}")
             raise MiHomeClientError(str(e)) from e
 
     async def control_power(self, did: str, is_on: bool, device_name: str = "") -> None:
@@ -165,37 +194,35 @@ class MiHomeClient:
         try:
             async with self._api_lock:
                 await asyncio.to_thread(self.api.login)
-                logger.info(f"[MiHome] 下发控制: {device_name} ({did}) -> {is_on}")
+                logger.info(f"[MiHome] 执行控制: {device_name} ({did}) -> {is_on}")
                 device = mijiaDevice(self.api, did=did)
-                
-                # 问题 5：诊断手段，非稳定接口，封装保护
-                try:
-                    props = await asyncio.to_thread(device.get_props)
-                    logger.info(f"[MiHome] 设备 {did} 嗅探结果: {props}")
-                except Exception as p_e:
-                    logger.warning(f"[MiHome] 设备 {did} 属性嗅探失败 (接口不支持): {p_e}")
-
                 await asyncio.to_thread(device.set, "on", is_on)
             self.data_manager.update_state(last_control_error="", last_control_device=device_name or did)
         except LoginError as e:
+            self.data_manager.update_state(last_control_error=f"鉴权过期: {e}", last_control_device=device_name or did)
             raise MiHomeAuthError(str(e)) from e
         except DeviceNotFoundError as e:
-            logger.error(f"[MiHome] 底层确认 DID 不存在: {did}")
+            self.data_manager.update_state(last_control_error="DID不存在", last_control_device=device_name or did)
             raise MiHomeControlError("device_not_found") from e
         except DeviceSetError as e:
+            self.data_manager.update_state(last_control_error=f"设置被拒: {e}", last_control_device=device_name or did)
             raise MiHomeControlError("device_rejected") from e
         except APIError as e:
-            raise MiHomeClientError(f"云端拒绝请求: {e}") from e
+            self.data_manager.update_state(last_control_error=f"云端异常: {e}", last_control_device=device_name or did)
+            raise MiHomeClientError(f"API拒绝: {e}") from e
         except Exception as e:
             logger.error(f"[MiHome] 未知控制异常: type={type(e).__name__}, detail={e}")
-            self.data_manager.update_state(last_control_error=str(e), last_control_device=device_name or did)
+            self.data_manager.update_state(last_control_error=f"内核错误: {e}", last_control_device=device_name or did)
             raise MiHomeControlError(str(e)) from e
 
-    async def terminate(self) -> None:
+    async def terminate(self):
         if self._login_process and self._login_process.returncode is None:
             try:
                 self._login_process.kill()
                 await self._login_process.wait()
-            except ProcessLookupError: pass
-            except Exception: pass
-        self.api = None; self._login_status = LOGIN_IDLE; self._login_process = None
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.warning(f"[MiHome] 终止进程失败: {e}")
+        self.api = None
+        self._login_status = LOGIN_IDLE
