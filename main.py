@@ -1,32 +1,34 @@
 # -*- coding: utf-8 -*-
+import os
 import json
 from miservice import MiAccount, MiIOService
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger, AstrBotConfig
+from astrbot.api import logger
 
-# 🚀 引入官方开发指南推荐的路径获取工具
+# 引入框架标准的路径获取工具
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 @register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v2.1")
 class MiHomeControlPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    # 将 config 设置为默认 None，防止框架使用回退加载机制时引发连环报错
+    def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self.config = config
+        self.config = config or {}
         self.username = self.config.get("mi_username", "")
         self.password = self.config.get("mi_password", "")
         
-        # 🚀 严格按照 AstrBot 开发指南规范，创建插件专属数据目录
-        # getattr 兼容旧版本，v4.9.2+ 会自动获取 self.name
+        # 🚀 修复：兼容 get_astrbot_data_path() 返回字符串的情况，使用 os 模块处理路径
         plugin_name = getattr(self, "name", "astrbot_plugin_mihome")
-        plugin_data_dir = get_astrbot_data_path() / "plugin_data" / plugin_name
+        base_data_path = str(get_astrbot_data_path())
+        plugin_data_dir = os.path.join(base_data_path, "plugin_data", plugin_name)
         
         # 确保该目录在系统上存在
-        plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(plugin_data_dir, exist_ok=True)
         
         # 将小米的 Token 缓存文件安全地存放在该目录下
-        self.token_store_path = str(plugin_data_dir / "mi_token_cache.json")
+        self.token_store_path = os.path.join(plugin_data_dir, "mi_token_cache.json")
 
     async def _get_mi_service(self) -> MiIOService:
         """初始化小米账号并获取云端服务实例"""
