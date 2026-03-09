@@ -90,7 +90,6 @@ class MiHomeClient:
         
         try:
             async with self._api_lock:
-                # 必须使用 -u 开启无缓冲模式
                 self._login_process = await asyncio.create_subprocess_exec(
                     sys.executable, "-u", self._worker_script, self.data_manager.get_auth_path(),
                     stdout=asyncio.subprocess.PIPE,
@@ -110,13 +109,12 @@ class MiHomeClient:
                         text = chunk.decode('utf-8', errors='replace')
                         full_buffer += text
                         
-                        logger.info(f"[MiHome][WorkerOutput] {text!r}")
+                        # 排障用：如果用户看不到 debug，可在此时手动临时改为 info
+                        logger.debug(f"[MiHome][WorkerOutput] {text!r}")
                         
                         if not qr_found:
-                            # 1. 移除换行和空白，解决 URL 被拆成多段输出的问题
-                            compact_buffer = "".join(full_buffer.split())
+                            compact_buffer = full_buffer.replace("\r", "").replace("\n", "")
                             
-                            # 2. 贪婪匹配小米认证链接
                             match = re.search(
                                 r'(https://account\.xiaomi\.com/pass/qr/login\?[^\s\'"]+)',
                                 compact_buffer,
@@ -124,9 +122,8 @@ class MiHomeClient:
                             
                             if match:
                                 qr_url = match.group(1)
-                                
-                                # 3. 🚀 关键修复：只有包含完整核心参数才认为链接有效，防止抢跑发送残缺 URL
-                                if "ticket=" in qr_url and "dc=" in qr_url:
+                                # 修复 3：再加一个 sid= 校验，确保链接万无一失
+                                if "ticket=" in qr_url and "dc=" in qr_url and "sid=" in qr_url:
                                     qr_found = True
                                     logger.info(f"[MiHome] 已成功截获完整登录链接: {qr_url}")
                                     if asyncio.iscoroutinefunction(qr_callback):
@@ -134,8 +131,8 @@ class MiHomeClient:
                                     else:
                                         qr_callback(qr_url)
                                 else:
-                                    # 链接尚不完整（如日志中的只有 ?ticket），继续等待下一轮读取
-                                    logger.warning(f"[MiHome] 截获到不完整链接，继续等待后续参数: {qr_url}")
+                                    # 抓到了域名但核心参数没齐，静默等待下一块 buffer 粘合
+                                    pass
 
                 try:
                     await asyncio.wait_for(
@@ -150,7 +147,7 @@ class MiHomeClient:
                         pass
                     
                     if not qr_found:
-                        err_msg = "在120秒内未能提取到登录链接，请检查网络或日志输出。"
+                        err_msg = "在120秒内未能提取到有效链接（可能因云端拥堵或底层库输出变更）"
                         self.data_manager.update_state(last_login_error=err_msg)
                         return {"status": "qrcode_not_found"}
                     else:
@@ -163,11 +160,7 @@ class MiHomeClient:
                         last_login_error=""
                     )
                     self.api = mijiaAPI(self.data_manager.get_auth_path())
-                    
-                    if not qr_found:
-                        logger.info("[MiHome] 沙盒执行成功但未产生链接，判定为已登录状态。")
-                        return {"status": "already_logged_in"}
-                    return {"status": "success"}
+                    return {"status": "success" if qr_found else "already_logged_in"}
                 else:
                     error_msg = full_buffer[-800:] if len(full_buffer) > 800 else full_buffer
                     error_msg = error_msg.strip()
@@ -188,13 +181,38 @@ class MiHomeClient:
         try:
             async with self._api_lock:
                 await asyncio.to_thread(self.api.login)
-                devices = await asyncio.to_thread(self.api.get_devices_list)
-            return devices if isinstance(devices, list) else []
+                
+                own_devices = await asyncio.to_thread(self.api.get_devices_list)
+                if not isinstance(own_devices, list): own_devices = []
+                
+                shared_devices = []
+                if hasattr(self.api, "get_shared_devices_list"):
+                    try:
+                        shared_devices = await asyncio.to_thread(self.api.get_shared_devices_list)
+                        if not isinstance(shared_devices, list): shared_devices = []
+                    except Exception as e:
+                        # 修复 2：将共享设备失败也记录进状态文件，方便排障
+                        err_txt = f"共享设备拉取失败: {e}"
+                        logger.warning(f"[MiHome] {err_txt}")
+                        self.data_manager.update_state(last_login_error=err_txt)
+                
+                merged = {}
+                for d in (own_devices + shared_devices):
+                    if isinstance(d, dict):
+                        did = str(d.get("did", "")).strip()
+                        if did:
+                            merged[did] = d
+                return list(merged.values())
+
         except LoginError as e:
             self.data_manager.update_state(last_login_error=str(e))
             raise MiHomeAuthError(f"鉴权失效: {e}") from e
+        except APIError as e:
+            self.data_manager.update_state(last_login_error=f"拉取设备列表时 API 异常: {e}")
+            raise MiHomeClientError(f"云端接口调用异常: {e}") from e
         except Exception as e:
-            self.data_manager.update_state(last_login_error=str(e))
+            # 修复 1：更具体的未知异常回写
+            self.data_manager.update_state(last_login_error=f"拉取设备列表时未知异常: {e}")
             raise MiHomeClientError(f"获取设备列表失败: {e}") from e
 
     async def control_power(self, did: str, is_on: bool, device_name: str = "") -> None:
@@ -206,6 +224,18 @@ class MiHomeClient:
                 await asyncio.to_thread(device.set, "on", is_on)
 
             self.data_manager.update_state(last_control_error="", last_control_device=device_name or did)
+        except LoginError as e:
+            self.data_manager.update_state(last_control_error=f"鉴权失效: {e}", last_control_device=device_name or did)
+            raise MiHomeAuthError(f"下发控制指令前鉴权被拒: {e}") from e
+        except DeviceNotFoundError as e:
+            self.data_manager.update_state(last_control_error="设备 DID 不存在", last_control_device=device_name or did)
+            raise MiHomeControlError("device_not_found") from e
+        except DeviceSetError as e:
+            self.data_manager.update_state(last_control_error=f"属性设置拒绝: {e}", last_control_device=device_name or did)
+            raise MiHomeControlError("device_rejected") from e
+        except APIError as e:
+            self.data_manager.update_state(last_control_error=f"云端接口拒绝: {e}", last_control_device=device_name or did)
+            raise MiHomeClientError(f"API Error: {e}") from e
         except Exception as e:
             self.data_manager.update_state(last_control_error=str(e), last_control_device=device_name or did)
             raise MiHomeControlError(str(e)) from e
