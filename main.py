@@ -23,7 +23,7 @@ class MiHomeAPIError(MiHomeException):
 class MiHomeTimeoutError(MiHomeException):
     pass
 
-@register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v5.1")
+@register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v5.2")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -202,20 +202,21 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     @filter.command("控制米家")
-    async def control_mihome_device(self, event: AstrMessageEvent, *, query: str = ""):
+    async def control_mihome_device(self, event: AstrMessageEvent, *args: str):
         """控制米家设备 (仅限管理员私聊)"""
         device_map = self._parse_device_map()
         if not device_map:
             yield event.plain_result("❌ 配置为空或格式错误，请前往 WebUI 检查 `device_map`。")
             return
 
-        parts = query.strip().split()
-        if len(parts) < 2:
+        # 🚀 修复点：直接使用 AstrBot 传进来的 args 列表
+        if len(args) < 2:
             yield event.plain_result("❌ 格式错误。正确用法：/控制米家 [设备别名] [开/关]")
             return
 
-        action_str = parts[-1].lower()
-        device_name = " ".join(parts[:-1]).strip()
+        # 无论中间有多少个空格，最后一个始终是动作，前面拼起来全是设备名
+        action_str = args[-1].lower()
+        device_name = " ".join(args[:-1]).strip()
 
         if device_name not in device_map:
             available = "、".join(list(device_map.keys())[:10]) + ("..." if len(device_map) > 10 else "")
