@@ -23,7 +23,7 @@ class MiHomeAPIError(MiHomeException):
 class MiHomeTimeoutError(MiHomeException):
     pass
 
-@register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v5.2")
+@register("astrbot_plugin_mihome", "RyanVaderAn", "米家设备云端控制插件 (基于 MiService)", "v5.4")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -141,13 +141,12 @@ class MiHomeControlPlugin(Star):
                 raise  
             except Exception as e:
                 err_str = str(e).lower()
-                # 模糊检测鉴权失效相关的报错内容
                 is_auth_issue = any(k in err_str for k in ["auth", "token", "unauthorized", "sign", "401", "login"])
                 
                 if is_auth_issue and attempt < max_retries:
                     logger.warning(f"[MiHome] 检测到可能的会话失效 ({e})，正在清空缓存并自动重试...")
                     self._mi_service = None
-                    self._cached_credentials = ("", "") # 极致严谨：清理凭据快照确保深度重载
+                    self._cached_credentials = ("", "") 
                     continue  
                 
                 raise MiHomeAPIError(f"云端接口调用异常: {e}") from e
@@ -202,21 +201,20 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     @filter.command("控制米家")
-    async def control_mihome_device(self, event: AstrMessageEvent, *args: str):
+    async def control_mihome_device(self, event: AstrMessageEvent, *, query: str = ""):
         """控制米家设备 (仅限管理员私聊)"""
         device_map = self._parse_device_map()
         if not device_map:
             yield event.plain_result("❌ 配置为空或格式错误，请前往 WebUI 检查 `device_map`。")
             return
 
-        # 🚀 修复点：直接使用 AstrBot 传进来的 args 列表
-        if len(args) < 2:
+        parts = query.strip().split()
+        if len(parts) < 2:
             yield event.plain_result("❌ 格式错误。正确用法：/控制米家 [设备别名] [开/关]")
             return
 
-        # 无论中间有多少个空格，最后一个始终是动作，前面拼起来全是设备名
-        action_str = args[-1].lower()
-        device_name = " ".join(args[:-1]).strip()
+        action_str = parts[-1].lower()
+        device_name = " ".join(parts[:-1]).strip()
 
         if device_name not in device_map:
             available = "、".join(list(device_map.keys())[:10]) + ("..." if len(device_map) > 10 else "")
