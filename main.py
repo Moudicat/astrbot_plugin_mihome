@@ -4,7 +4,6 @@ import shlex
 import re
 from typing import Any, Dict, List, Tuple, Optional
 
-# 🚀 优化 1：移除了未使用的 MessageEventResult
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
@@ -12,7 +11,7 @@ from astrbot.api import logger, AstrBotConfig
 from .data_manager import MiHomeDataManager
 from .mihome_client import MiHomeClient, MiHomeAuthError, MiHomeControlError, MiHomeClientError
 
-@register("astrbot_plugin_mihome", "Ryan", "米家云端智能管家", "6.3.1")
+@register("astrbot_plugin_mihome", "Ryan", "米家云端智能管家", "6.3.2")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -78,6 +77,7 @@ class MiHomeControlPlugin(Star):
         val_str = str(val).strip()
         val_lower = val_str.lower()
         
+        # 🚀 取消单行压缩风格，更加工程化
         if val_lower == "true":
             return True
         if val_lower == "false":
@@ -90,7 +90,6 @@ class MiHomeControlPlugin(Star):
             
         return val_str
 
-    # 🚀 优化 2：新增属性名去重归一化函数
     def _normalize_prop_keys(self, keys: List[str]) -> List[str]:
         normalized = {}
         for key in keys:
@@ -105,8 +104,14 @@ class MiHomeControlPlugin(Star):
     @filter.command("米家登录")
     async def mihome_login(self, event: AstrMessageEvent):
         yield event.plain_result("⏳ 正在拉起独立沙盒环境...")
+        
         async def cb(url): 
-            await event.send(event.plain_result(f"🔔 请使用米家APP扫码授权：\n\n{url}"))
+            # 🚀 回调异常包裹，防止网络瞬断带崩整个授权协程
+            try:
+                await event.send(event.plain_result(f"🔔 请使用米家APP扫码授权：\n\n{url}"))
+            except Exception as e:
+                logger.error(f"[MiHome] 往客户端推送授权链接失败: {e}")
+                
         res = await self.client.login(qr_callback=cb)
         s = res.get("status")
         msg = {
@@ -183,7 +188,6 @@ class MiHomeControlPlugin(Star):
         content = re.sub(cmd_prefix, '', msg).strip()
 
         if not content:
-            # 🚀 优化 4：补充示例
             yield event.plain_result("❌ 缺少参数。\n格式：/米家详情 [设备别名]\n示例：/米家详情 空调")
             return
 
@@ -209,7 +213,6 @@ class MiHomeControlPlugin(Star):
                 if not props:
                     yield event.plain_result(f"⚠️ 【{alias}】未探测到公开属性。")
                 else:
-                    # 🚀 优化 2 & 3：去重归一化 + 长度上限截断
                     prop_keys = self._normalize_prop_keys(list(props.keys()))
                     shown = prop_keys[:40]
                     prop_list_str = ", ".join(shown)
@@ -229,7 +232,6 @@ class MiHomeControlPlugin(Star):
         content = re.sub(cmd_prefix, '', msg).strip()
 
         if not content:
-            # 🚀 优化 4：补充完整控制示例
             yield event.plain_result("❌ 缺少参数。\n格式：/米家控制 [设备名] [动作/属性] [值]\n示例：\n/米家控制 空调 开\n/米家控制 空调 温度 26")
             return
 
