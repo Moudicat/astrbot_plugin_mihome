@@ -1,34 +1,34 @@
 # -*- coding: utf-8 -*-
-import os
 import json
+from pathlib import Path
 from typing import Dict, Any
 from astrbot.api import logger
 
-# 严格遵守 AstrBot 规范：获取正确的 data 根目录
+# 🚀 强制 Path 包装，杜绝返回值类型不一致导致的路径拼接崩溃
 try:
     from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-    BASE_PATH = get_astrbot_data_path()  # 已经是 .../data/
+    BASE_PATH = Path(get_astrbot_data_path())
 except ImportError:
-    BASE_PATH = os.path.join(os.path.abspath(os.getcwd()), "data")
+    BASE_PATH = Path.cwd() / "data"
 
 class MiHomeDataManager:
     def __init__(self, plugin_name: str):
-        # 正确拼接：直接连接 plugin_data，杜绝 data/data 套娃
-        self.data_dir = os.path.join(str(BASE_PATH), "plugin_data", plugin_name)
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.auth_path = os.path.join(self.data_dir, "auth.json")
-        self.state_path = os.path.join(self.data_dir, "state.json")
+        self.data_dir = BASE_PATH / "plugin_data" / plugin_name
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.auth_path = self.data_dir / "auth.json"
+        self.state_path = self.data_dir / "state.json"
 
     def get_auth_path(self) -> str:
-        return self.auth_path
+        # 向下兼容底层依赖 mijiaAPI，要求必须是字符串
+        return str(self.auth_path)
 
     def auth_exists(self) -> bool:
-        return os.path.exists(self.auth_path)
+        return self.auth_path.exists()
 
     def clear_auth_file(self) -> bool:
         if self.auth_exists():
             try:
-                os.remove(self.auth_path)
+                self.auth_path.unlink()
                 return True
             except Exception as e:
                 logger.error(f"[MiHome] 文件移除失败: {e}")
@@ -36,25 +36,23 @@ class MiHomeDataManager:
         return False
 
     def load_state(self) -> Dict[str, Any]:
-        if not os.path.exists(self.state_path):
+        if not self.state_path.exists():
             return {}
         try:
-            with open(self.state_path, "r", encoding="utf-8") as f:
+            with self.state_path.open("r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             logger.debug(f"[MiHome] 状态文件读取忽略: {e}")
             return {}
 
     def save_state(self, state: Dict[str, Any]) -> None:
-        """🚀 补全缺失的 save_state 方法"""
         try:
-            with open(self.state_path, "w", encoding="utf-8") as f:
+            with self.state_path.open("w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"[MiHome] 状态保存失败: {e}")
 
     def update_state(self, **kwargs) -> None:
-        """更新状态并调用 save_state 保存"""
         state = self.load_state()
         state.update(kwargs)
         self.save_state(state)
