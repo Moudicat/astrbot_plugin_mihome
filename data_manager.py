@@ -45,12 +45,16 @@ class MiHomeDataManager:
             logger.debug(f"[MiHome] 状态文件读取忽略: {e}")
             return {}
 
-    def update_state(self, **kwargs):
-        state = self.load_state()
-        state.update(kwargs)
+    def save_state(self, state: Dict[str, Any]) -> None:
+        """🚀 补全缺失的 save_state 方法"""
         try:
             with open(self.state_path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"[MiHome] 状态保存失败: {e}")
+
+    def update_state(self, **kwargs) -> None:
+        """更新状态并调用 save_state 保存"""
+        state = self.load_state()
+        state.update(kwargs)
         self.save_state(state)
