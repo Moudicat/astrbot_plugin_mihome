@@ -2,7 +2,7 @@
 
 ## [v6.3.11 ] - 2026-03-11
 
-## 📦 已适配中文支持列表 (Supported Device Profiles)
+## 📦 已适配中文支持列表 (Supported Device Profiles)欢迎提交 Issue，帮助完善设备中文设置。
 
 以下设备已在 `device_profiles.py` 中预置了专属的属性与状态中文映射字典：
 
