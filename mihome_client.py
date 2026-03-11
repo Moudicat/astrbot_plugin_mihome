@@ -8,29 +8,41 @@ from typing import Dict, Callable, Awaitable, Union, Any, Optional, List
 
 from astrbot.api import logger
 from mijiaAPI import (
-    mijiaAPI, 
+    mijiaAPI,
     mijiaDevice,
     LoginError,
     DeviceNotFoundError,
     DeviceSetError,
     DeviceGetError,
-    APIError
+    APIError,
 )
 
 try:
     from requests.exceptions import RequestException, SSLError
 except ImportError:
-    class RequestException(Exception): pass
-    class SSLError(Exception): pass
+    class RequestException(Exception):
+        pass
+
+    class SSLError(Exception):
+        pass
 
 from .data_manager import MiHomeDataManager
 
 LOGIN_IDLE = "idle"
 LOGIN_RUNNING = "running"
 
-class MiHomeClientError(Exception): pass
-class MiHomeAuthError(MiHomeClientError): pass
-class MiHomeControlError(MiHomeClientError): pass
+
+class MiHomeClientError(Exception):
+    pass
+
+
+class MiHomeAuthError(MiHomeClientError):
+    pass
+
+
+class MiHomeControlError(MiHomeClientError):
+    pass
+
 
 class MiHomeClient:
     def __init__(self, data_manager: MiHomeDataManager):
@@ -49,7 +61,24 @@ class MiHomeClient:
         if not self.api:
             raise MiHomeClientError("插件已被终止或未初始化。")
 
-    # 🚀 确认点 2：内存静默自愈机制已妥善安置！
+    def _normalize_key(self, key: str) -> str:
+        return str(key).strip().lower().replace("-", "_")
+
+    def _unit_suffix(self, unit: Any) -> str:
+        mapping = {
+            "percentage": "%",
+            "celsius": "°C",
+            "lux": " lux",
+            "rpm": " rpm",
+            "minutes": " 分钟",
+            "days": " 天",
+        }
+        if unit in mapping:
+            return mapping[unit]
+        if unit in ("none", "", None):
+            return ""
+        return f" {unit}"
+
     def _prepare_device_sync(self, did: str):
         self.api.login()
         if getattr(self.api, "device_list", None) is None:
@@ -75,82 +104,106 @@ class MiHomeClient:
                 try:
                     self._login_process.kill()
                     await self._login_process.wait()
-                except ProcessLookupError: pass
+                except ProcessLookupError:
+                    pass
                 except Exception as e:
                     logger.warning(f"[MiHome] 强制中止登录进程失败: {e}")
                 finally:
                     self._login_process = None
 
-            self._login_status = LOGIN_IDLE 
+            self._login_status = LOGIN_IDLE
             ok = self.data_manager.clear_auth_file()
             self.api = mijiaAPI(self.data_manager.get_auth_path())
-            
+
             self.data_manager.update_state(
-                last_login_at="", last_login_error="", last_shared_error="",
-                last_control_error="", last_control_device=""
+                last_login_at="",
+                last_login_error="",
+                last_shared_error="",
+                last_control_error="",
+                last_control_device="",
             )
             return ok
 
-    async def login(self, qr_callback: Union[Callable[[str], Awaitable[None]], Callable[[str], None]]) -> Dict[str, Any]:
+    async def login(
+        self,
+        qr_callback: Union[Callable[[str], Awaitable[None]], Callable[[str], None]],
+    ) -> Dict[str, Any]:
         if self._login_status != LOGIN_IDLE:
             return {"status": "in_progress"}
-        
+
         logger.info(f"[MiHome] 启动登录沙盒进程 -> {self._worker_script}")
         self._login_status = LOGIN_RUNNING
         qr_found = False
         full_buffer = ""
         proc: Optional[asyncio.subprocess.Process] = None
-        
+
         try:
             async with self._api_lock:
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-u", self._worker_script, self.data_manager.get_auth_path(),
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+                    sys.executable,
+                    "-u",
+                    self._worker_script,
+                    self.data_manager.get_auth_path(),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
                 self._login_process = proc
-                if proc.stdout is None: raise MiHomeClientError("Stdout 管道损坏")
-                
+                if proc.stdout is None:
+                    raise MiHomeClientError("Stdout 管道损坏")
+
             async def read_stdout():
                 nonlocal qr_found, full_buffer
                 while True:
                     chunk = await proc.stdout.read(256)
-                    if not chunk: break
-                    text = chunk.decode('utf-8', errors='replace')
+                    if not chunk:
+                        break
+                    text = chunk.decode("utf-8", errors="replace")
                     full_buffer = (full_buffer + text)[-4096:]
-                    
+
                     if text.strip():
-                        for line in text.split('\n'):
-                            if line.strip(): logger.debug(f"[Sandbox] {line.strip()}")
-                    
+                        for line in text.split("\n"):
+                            if line.strip():
+                                logger.debug(f"[Sandbox] {line.strip()}")
+
                     if not qr_found:
                         compact = full_buffer.replace("\r", "").replace("\n", "")
-                        match = re.search(r'(https://account\.xiaomi\.com/pass/qr/login\?[^\s\'"]+)', compact)
+                        match = re.search(
+                            r'(https://account\.xiaomi\.com/pass/qr/login\?[^\s\'"]+)',
+                            compact,
+                        )
                         if match:
                             url = match.group(1)
                             if "ticket=" in url and "dc=" in url and "sid=" in url:
                                 qr_found = True
                                 logger.info("[MiHome] 成功提取完整登录链接。")
-                                if asyncio.iscoroutinefunction(qr_callback): await qr_callback(url)
-                                else: qr_callback(url)
-            
+                                if asyncio.iscoroutinefunction(qr_callback):
+                                    await qr_callback(url)
+                                else:
+                                    qr_callback(url)
+
             try:
-                await asyncio.wait_for(asyncio.gather(proc.wait(), read_stdout()), timeout=120.0)
+                await asyncio.wait_for(
+                    asyncio.gather(proc.wait(), read_stdout()),
+                    timeout=120.0,
+                )
             except asyncio.TimeoutError:
                 async with self._api_lock:
                     try:
                         proc.kill()
                         await proc.wait()
-                    except ProcessLookupError: pass
-                    except Exception: pass
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        pass
                 msg = "授权确认已超时 (120秒)" if qr_found else "超时未能提取登录链接"
                 self.data_manager.update_state(last_login_error=msg)
                 return {"status": "timeout" if qr_found else "qrcode_not_found"}
-            
+
             async with self._api_lock:
                 if proc.returncode == 0:
                     self.data_manager.update_state(
-                        last_login_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                        last_login_error=""
+                        last_login_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        last_login_error="",
                     )
                     self.api = mijiaAPI(self.data_manager.get_auth_path())
                     return {"status": "success" if qr_found else "already_logged_in"}
@@ -175,20 +228,23 @@ class MiHomeClient:
             async with self._api_lock:
                 await asyncio.wait_for(asyncio.to_thread(self.api.login), timeout=15.0)
                 own = await asyncio.wait_for(asyncio.to_thread(self.api.get_devices_list), timeout=20.0)
-                if not isinstance(own, list): own = []
-                
+                if not isinstance(own, list):
+                    own = []
+
                 shared = []
                 shared_error = ""
                 if hasattr(self.api, "get_shared_devices_list"):
                     try:
                         shared = await asyncio.wait_for(
-                            asyncio.to_thread(self.api.get_shared_devices_list), timeout=20.0
+                            asyncio.to_thread(self.api.get_shared_devices_list),
+                            timeout=20.0,
                         )
-                        if not isinstance(shared, list): shared = []
+                        if not isinstance(shared, list):
+                            shared = []
                     except Exception as e:
                         shared_error = f"共享列表获取异常: {type(e).__name__}"
                         logger.warning(f"[MiHome] {shared_error}")
-                
+
                 merged = {}
                 did_to_name = {}
                 for d in (own + shared):
@@ -196,10 +252,10 @@ class MiHomeClient:
                         did_str = str(d["did"]).strip()
                         merged[did_str] = d
                         did_to_name[did_str] = d.get("name", "未知设备")
-                
+
                 self.data_manager.update_state(
-                    last_shared_error=shared_error, 
-                    did_to_name=did_to_name
+                    last_shared_error=shared_error,
+                    did_to_name=did_to_name,
                 )
                 return list(merged.values())
         except asyncio.TimeoutError as e:
@@ -221,89 +277,167 @@ class MiHomeClient:
             self.data_manager.update_state(last_login_error=f"系统级同步异常: {e}")
             raise MiHomeClientError(str(e)) from e
 
-    async def get_device_props(self, did: str) -> Dict[str, Any]:
+    async def get_device_props(
+        self,
+        did: str,
+        readable_keys: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        返回统一结构：
+        {
+            "writable": [...],         # 从 prop_list / rw 推断
+            "readable": {k: v},        # 成功读取到的状态
+            "readable_keys": [...],    # 预期有，但当前没读到
+        }
+        """
         self._check_api()
         try:
             async with self._api_lock:
-                device = await asyncio.wait_for(asyncio.to_thread(self._prepare_device_sync, did), timeout=20.0)
+                device = await asyncio.wait_for(
+                    asyncio.to_thread(self._prepare_device_sync, did),
+                    timeout=8.0,
+                )
 
                 try:
                     prop_list = getattr(device, "prop_list", {})
-                    if not isinstance(prop_list, dict): prop_list = {}
+                    if not isinstance(prop_list, dict):
+                        prop_list = {}
                 except Exception as e:
                     logger.debug(f"[MiHome] 读取 prop_list 失败: {e}")
                     prop_list = {}
 
-                try:
-                    live_props = await asyncio.wait_for(asyncio.to_thread(device.get_props), timeout=8.0)
-                    if not isinstance(live_props, dict): live_props = {}
-                except Exception as e:
-                    logger.warning(f"[MiHome] 获取设备 {did} 实况失败 (不影响图纸能力解析): {e}")
-                    live_props = {}
+                result = {
+                    "writable": [],
+                    "readable": {},
+                    "readable_keys": [],
+                }
 
-                if not prop_list and not live_props: return {}
-
+                # 1) 从图纸推断可写项
                 exclude_kws = [
-                    "fault", "dbg", "heartbeat", "moto", "motor", "crc32", 
-                    "brand_id", "remote_id", "match_state", "library", "ac_type", 
-                    "mac", "ip", "electric_power", "user_device_info"
+                    "fault",
+                    "dbg",
+                    "heartbeat",
+                    "moto",
+                    "motor",
+                    "crc32",
+                    "brand_id",
+                    "remote_id",
+                    "match_state",
+                    "library",
+                    "ac_type",
+                    "mac",
+                    "ip",
+                    "user_device_info",
                 ]
 
-                result = {"writable": [], "readable": {}, "readable_keys": []}
-                all_keys = set(prop_list.keys()).union(set(live_props.keys()))
-                seen_normalized = set()
+                seen_writable = set()
+                for raw_k, p_info in prop_list.items():
+                    norm_k = self._normalize_key(raw_k)
+                    if any(bw in norm_k for bw in exclude_kws):
+                        continue
+                    if norm_k in seen_writable:
+                        continue
 
-                for k in all_keys:
-                    k_lower = k.lower()
-                    if any(bw in k_lower for bw in exclude_kws): continue
-                    
-                    norm_k = k_lower.replace("-", "_")
-                    if norm_k in seen_normalized: continue
-                    seen_normalized.add(norm_k)
-
+                    rw = getattr(p_info, "rw", [])
                     is_writable = False
-                    unit_str = ""
-                    
-                    prop_info = prop_list.get(k) or prop_list.get(k.replace("_", "-"))
-                    if prop_info:
-                        # 🚀 确认点 3：rw 泛型校验大幅放宽
-                        rw = getattr(prop_info, "rw", [])
-                        if isinstance(rw, (list, tuple, set)) and "write" in rw:
+                    if isinstance(rw, (list, tuple, set)):
+                        rw_set = {str(x).lower() for x in rw}
+                        if "write" in rw_set:
                             is_writable = True
-                        elif isinstance(rw, str) and "write" in rw.lower():
-                            is_writable = True
-                        
-                        unit = getattr(prop_info, "unit", "")
-                        if unit == "percentage": unit_str = "%"
-                        elif unit == "celsius": unit_str = "°C"
-                        elif unit == "lux": unit_str = " lux"
-                        elif unit == "rpm": unit_str = " rpm"
-                        elif unit == "minutes": unit_str = " 分钟"
-                        elif unit == "days": unit_str = " 天"
-                        elif unit not in ("none", "", None): unit_str = f" {unit}"
-                    else:
-                        if any(ro in norm_k for ro in ["temperature", "humidity", "pm2.5", "quality", "time", "level", "status"]):
-                            is_writable = "target" in norm_k or "set" in norm_k
-                        else:
-                            is_writable = True
-
-                    val = live_props.get(k) if k in live_props else live_props.get(norm_k)
+                    elif isinstance(rw, str) and "write" in rw.lower():
+                        is_writable = True
 
                     if is_writable:
+                        seen_writable.add(norm_k)
                         result["writable"].append(norm_k)
-                    else:
-                        if val is not None:
-                            if isinstance(val, float): val = round(val, 2)
-                            result["readable"][norm_k] = f"{val}{unit_str}"
-                        else:
-                            result["readable_keys"].append(norm_k)
 
+                # 2) 已适配设备：受控并发精准读取 detail_readable
+                if readable_keys:
+                    normalized_targets = list(
+                        dict.fromkeys(self._normalize_key(k) for k in readable_keys if k)
+                    )
+
+                    read_concurrency = 3
+                    semaphore = asyncio.Semaphore(read_concurrency)
+
+                    async def fetch_one(norm_k: str):
+                        raw_candidates = [norm_k, norm_k.replace("_", "-")]
+                        fetch_key = None
+
+                        for cand in raw_candidates:
+                            if cand in prop_list:
+                                fetch_key = cand
+                                break
+
+                        if fetch_key is None:
+                            fetch_key = norm_k.replace("_", "-")
+
+                        async with semaphore:
+                            try:
+                                val = await asyncio.wait_for(
+                                    asyncio.to_thread(device.get, fetch_key),
+                                    timeout=2.2,
+                                )
+                                if val is None:
+                                    return norm_k, None
+
+                                prop_info = prop_list.get(fetch_key) or prop_list.get(norm_k)
+                                unit_str = self._unit_suffix(getattr(prop_info, "unit", "")) if prop_info else ""
+
+                                if isinstance(val, float):
+                                    val = round(val, 2)
+                                return norm_k, f"{val}{unit_str}"
+                            except Exception as e:
+                                logger.debug(f"[MiHome] 读取属性 {fetch_key} 失败: {type(e).__name__}")
+                                return norm_k, None
+
+                    fetched = await asyncio.gather(*(fetch_one(k) for k in normalized_targets))
+
+                    for norm_k, val in fetched:
+                        if val is None:
+                            result["readable_keys"].append(norm_k)
+                        else:
+                            result["readable"][norm_k] = val
+
+                    if not prop_list and not result["readable"] and not result["readable_keys"]:
+                        return {}
+                    return result
+
+                # 3) 未适配设备：探索兜底
+                try:
+                    live_props = await asyncio.wait_for(
+                        asyncio.to_thread(device.get_props),
+                        timeout=6.0,
+                    )
+                    if not isinstance(live_props, dict):
+                        live_props = {}
+                except Exception as e:
+                    logger.warning(f"[MiHome] 未适配设备暴力嗅探失败: {e}")
+                    live_props = {}
+
+                for raw_k, val in live_props.items():
+                    norm_k = self._normalize_key(raw_k)
+                    if any(bw in norm_k for bw in exclude_kws):
+                        continue
+                    if val is None:
+                        result["readable_keys"].append(norm_k)
+                    else:
+                        if isinstance(val, float):
+                            val = round(val, 2)
+                        result["readable"][norm_k] = str(val)
+
+                if not prop_list and not result["readable"] and not result["readable_keys"]:
+                    return {}
                 return result
-                
-        except asyncio.TimeoutError: return {"__error__": "请求超时，设备可能断网"}
-        except DeviceGetError: return {"__error__": "设备拒绝读取状态"}
-        except LoginError: return {"__error__": "鉴权失效"}
-        except Exception as e: return {"__error__": f"内部异常:{type(e).__name__}"}
+
+        except asyncio.TimeoutError:
+            return {"__error__": "请求超时 (设备离线或深度休眠)"}
+        except DeviceGetError:
+            return {"__error__": "设备拒绝读取状态"}
+        except LoginError:
+            return {"__error__": "鉴权失效"}
+        except Exception as e:
+            return {"__error__": f"接口异常:{type(e).__name__}"}
 
     async def control_power(self, did: str, is_on: bool, device_name: str = "") -> None:
         self._check_idle()
@@ -311,8 +445,14 @@ class MiHomeClient:
         try:
             async with self._api_lock:
                 logger.info(f"[MiHome] 执行开关控制: {device_name} ({did}) -> {'开' if is_on else '关'}")
-                device = await asyncio.wait_for(asyncio.to_thread(self._prepare_device_sync, did), timeout=20.0)
-                await asyncio.wait_for(asyncio.to_thread(device.set, "on", is_on), timeout=15.0)
+                device = await asyncio.wait_for(
+                    asyncio.to_thread(self._prepare_device_sync, did),
+                    timeout=15.0,
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(device.set, "on", is_on),
+                    timeout=15.0,
+                )
             self.data_manager.update_state(last_control_error="", last_control_device=device_name or did)
         except Exception as e:
             self._handle_control_exception(e, device_name or did)
@@ -323,8 +463,14 @@ class MiHomeClient:
         try:
             async with self._api_lock:
                 logger.info(f"[MiHome] 执行高级控制: {device_name} ({did}) -> [{prop}] = {value}")
-                device = await asyncio.wait_for(asyncio.to_thread(self._prepare_device_sync, did), timeout=20.0)
-                await asyncio.wait_for(asyncio.to_thread(device.set, prop, value), timeout=15.0)
+                device = await asyncio.wait_for(
+                    asyncio.to_thread(self._prepare_device_sync, did),
+                    timeout=15.0,
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(device.set, prop, value),
+                    timeout=15.0,
+                )
             self.data_manager.update_state(last_control_error="", last_control_device=device_name or did)
         except Exception as e:
             self._handle_control_exception(e, device_name or did)
@@ -362,7 +508,9 @@ class MiHomeClient:
                 try:
                     self._login_process.kill()
                     await self._login_process.wait()
-                except ProcessLookupError: pass
-                except Exception as e: logger.warning(f"[MiHome] 终止进程失败: {e}")
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"[MiHome] 终止进程失败: {e}")
             self._login_status = LOGIN_IDLE
             self._login_process = None
