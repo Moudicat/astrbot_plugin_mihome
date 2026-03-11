@@ -3,6 +3,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Dict, Any
+
 from astrbot.api import logger
 
 try:
@@ -10,6 +11,7 @@ try:
     BASE_PATH = Path(get_astrbot_data_path())
 except ImportError:
     BASE_PATH = Path.cwd() / "data"
+
 
 class MiHomeDataManager:
     def __init__(self, plugin_name: str):
