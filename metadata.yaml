@@ -9,7 +9,7 @@ help: |
   /刷新米家 - 查看账号下的设备 DID 列表
   /控制米家 [别名] [开/关] - 控制设备 (需在 WebUI 配置 device_map)
   /米家登出 - 清除本地登录态并终结相关沙盒
-version: v6.3.11
+version: v6.3.22
 astrbot_version: ">=4.0.0"
 support_platforms:
   - aiocqhttp
