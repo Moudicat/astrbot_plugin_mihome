@@ -72,6 +72,8 @@ class MiHomeClient:
             "rpm": " rpm",
             "minutes": " 分钟",
             "days": " 天",
+            "μg/m3": " μg/m3",
+            "ug/m3": " μg/m3",
         }
         if unit in mapping:
             return mapping[unit]
@@ -247,15 +249,18 @@ class MiHomeClient:
 
                 merged = {}
                 did_to_name = {}
+                did_to_model = {}
                 for d in (own + shared):
                     if isinstance(d, dict) and d.get("did"):
                         did_str = str(d["did"]).strip()
                         merged[did_str] = d
-                        did_to_name[did_str] = d.get("name", "未知设备")
+                        did_to_name[did_str] = str(d.get("name", "未知设备")).strip() or "未知设备"
+                        did_to_model[did_str] = str(d.get("model", "")).strip()
 
                 self.data_manager.update_state(
                     last_shared_error=shared_error,
                     did_to_name=did_to_name,
+                    did_to_model=did_to_model,
                 )
                 return list(merged.values())
         except asyncio.TimeoutError as e:
@@ -277,6 +282,75 @@ class MiHomeClient:
             self.data_manager.update_state(last_login_error=f"系统级同步异常: {e}")
             raise MiHomeClientError(str(e)) from e
 
+    async def get_device_capabilities(self, did: str) -> Dict[str, Any]:
+        """
+        返回原始能力菜单：
+        {
+            "all_props": [...],
+            "writable": [...],
+            "readable": [...],
+            "__error__": "..."
+        }
+        """
+        self._check_api()
+        try:
+            async with self._api_lock:
+                device = await asyncio.wait_for(
+                    asyncio.to_thread(self._prepare_device_sync, did),
+                    timeout=8.0,
+                )
+
+                try:
+                    prop_list = getattr(device, "prop_list", {})
+                    if not isinstance(prop_list, dict):
+                        prop_list = {}
+                except Exception as e:
+                    logger.debug(f"[MiHome] 读取 prop_list 失败: {e}")
+                    prop_list = {}
+
+                if not prop_list:
+                    return {"all_props": [], "writable": [], "readable": []}
+
+                all_props = []
+                writable = []
+                readable = []
+
+                for raw_k, p_info in prop_list.items():
+                    norm_k = self._normalize_key(raw_k)
+                    if norm_k not in all_props:
+                        all_props.append(norm_k)
+
+                    rw = getattr(p_info, "rw", [])
+                    rw_set = set()
+                    if isinstance(rw, (list, tuple, set)):
+                        rw_set = {str(x).lower() for x in rw}
+                    elif isinstance(rw, str):
+                        rw_set = {rw.lower()}
+
+                    if "write" in rw_set and norm_k not in writable:
+                        writable.append(norm_k)
+                    if "read" in rw_set and norm_k not in readable:
+                        readable.append(norm_k)
+
+                all_props.sort()
+                writable.sort()
+                readable.sort()
+
+                return {
+                    "all_props": all_props,
+                    "writable": writable,
+                    "readable": readable,
+                }
+
+        except asyncio.TimeoutError:
+            return {"__error__": "请求超时 (设备离线或深度休眠)"}
+        except DeviceGetError:
+            return {"__error__": "设备拒绝读取能力菜单"}
+        except LoginError:
+            return {"__error__": "鉴权失效"}
+        except Exception as e:
+            return {"__error__": f"接口异常:{type(e).__name__}"}
+
     async def get_device_props(
         self,
         did: str,
@@ -285,9 +359,9 @@ class MiHomeClient:
         """
         返回统一结构：
         {
-            "writable": [...],         # 从 prop_list / rw 推断
-            "readable": {k: v},        # 成功读取到的状态
-            "readable_keys": [...],    # 预期有，但当前没读到
+            "writable": [...],
+            "readable": {k: v},
+            "readable_keys": [...],
         }
         """
         self._check_api()
@@ -312,7 +386,6 @@ class MiHomeClient:
                     "readable_keys": [],
                 }
 
-                # 1) 从图纸推断可写项
                 exclude_kws = [
                     "fault",
                     "dbg",
@@ -351,7 +424,6 @@ class MiHomeClient:
                         seen_writable.add(norm_k)
                         result["writable"].append(norm_k)
 
-                # 2) 已适配设备：受控并发精准读取 detail_readable
                 if readable_keys:
                     normalized_targets = list(
                         dict.fromkeys(self._normalize_key(k) for k in readable_keys if k)
@@ -387,8 +459,7 @@ class MiHomeClient:
                                 if isinstance(val, float):
                                     val = round(val, 2)
                                 return norm_k, f"{val}{unit_str}"
-                            except Exception as e:
-                                logger.debug(f"[MiHome] 读取属性 {fetch_key} 失败: {type(e).__name__}")
+                            except Exception:
                                 return norm_k, None
 
                     fetched = await asyncio.gather(*(fetch_one(k) for k in normalized_targets))
@@ -399,35 +470,8 @@ class MiHomeClient:
                         else:
                             result["readable"][norm_k] = val
 
-                    if not prop_list and not result["readable"] and not result["readable_keys"]:
-                        return {}
                     return result
 
-                # 3) 未适配设备：探索兜底
-                try:
-                    live_props = await asyncio.wait_for(
-                        asyncio.to_thread(device.get_props),
-                        timeout=6.0,
-                    )
-                    if not isinstance(live_props, dict):
-                        live_props = {}
-                except Exception as e:
-                    logger.warning(f"[MiHome] 未适配设备暴力嗅探失败: {e}")
-                    live_props = {}
-
-                for raw_k, val in live_props.items():
-                    norm_k = self._normalize_key(raw_k)
-                    if any(bw in norm_k for bw in exclude_kws):
-                        continue
-                    if val is None:
-                        result["readable_keys"].append(norm_k)
-                    else:
-                        if isinstance(val, float):
-                            val = round(val, 2)
-                        result["readable"][norm_k] = str(val)
-
-                if not prop_list and not result["readable"] and not result["readable_keys"]:
-                    return {}
                 return result
 
         except asyncio.TimeoutError:
