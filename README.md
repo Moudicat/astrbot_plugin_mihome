@@ -202,7 +202,7 @@ battery_level, steps, heart_rate, ...
 
 强烈欢迎提交 Issue，帮助我们将您的设备型号加入到**核心字典库 (MODEL_PROFILES)** 中。建议附带以下信息：
 * /astrbot/data/plugin_data/astrbot_plugin_mihome中设备对应的.json文件
-* 或者您已经知道model名称，直接在终端执行
+* 或者您已经知道model名称，直接在终端执行一下后全量复制在issue中
 
 ```bash
 python - <<'PY'
