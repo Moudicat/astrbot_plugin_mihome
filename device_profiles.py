@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 from typing import Any, Dict, List
 
+# ==========================================
+# 📦 类别常量
+# ==========================================
 CATEGORY_NONE = "无类别"
 CATEGORY_AC = "空调类别"
 CATEGORY_PURIFIER = "净化器类别"
@@ -73,10 +76,17 @@ GLOBAL_DISPLAY_MAP = {
     "cook_done": "烹饪是否完成",
     "switch_pausetoadd": "中途加料",
     "cookreservation": "预约设置",
+    "air_quality": "空气质量状态",
+    "fault": "故障状态",
+    "filter_used_time": "滤芯已使用时长",
+    "moto_speed_rpm": "电机转速",
 }
 
 # ==========================================
 # 📦 类别模板库
+# 说明：
+# - 作为通用大类模板
+# - 仅在 model 未精确命中时使用
 # ==========================================
 CATEGORY_PROFILES = {
     CATEGORY_AC: {
@@ -249,52 +259,188 @@ CATEGORY_PROFILES = {
     },
 }
 
+# ==========================================
+# 🎯 型号精确模板库
+# 规则：
+# 1. 优先按 model 精确命中
+# 2. 一旦命中 model，就以 model 模板为准
+# 3. 即使用户配置了 category，也先用 model
+# 4. model 未命中，才回退 category
+# ==========================================
+MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
+    "zhimi.airp.rma3": {
+        "category": CATEGORY_PURIFIER,
+        "prop_map": {
+            "开关": "on",
+            "模式": "mode",
+            "风速": "fan_level",
+            "童锁": "physical_controls_locked",
+            "提示音": "alarm",
+            "屏幕": "brightness",
+            "亮度": "brightness",
+        },
+        "value_map": {
+            # 模式
+            "自动": 0,
+            "睡眠": 1,
+            "最爱": 2,
+
+            # 布尔值
+            "开": True,
+            "关": False,
+            "开启": True,
+            "关闭": False,
+
+            # 屏幕亮度
+            "息屏": 0,
+            "微亮": 1,
+            "正常": 2,
+
+            # 兼容泛化写法
+            "熄灭": 0,
+            "暗": 1,
+            "亮": 2,
+        },
+        "display_map": {
+            "on": "开关状态",
+            "mode": "运行模式",
+            "fan_level": "风速",
+            "physical_controls_locked": "童锁状态",
+            "alarm": "提示音状态",
+            "brightness": "屏幕亮度",
+            "temperature": "当前温度",
+            "relative_humidity": "当前湿度",
+            "pm2.5_density": "PM2.5浓度",
+            "air_quality": "空气质量状态",
+            "fault": "故障状态",
+            "filter_left_time": "滤芯剩余天数",
+            "filter_life_level": "滤芯寿命百分比",
+            "filter_used_time": "滤芯已使用时长",
+            "moto_speed_rpm": "电机转速",
+        },
+        "detail_writable": [
+            "on",
+            "mode",
+            "fan_level",
+            "physical_controls_locked",
+            "alarm",
+            "brightness",
+        ],
+        "detail_readable": [
+            "pm2.5_density",
+            "temperature",
+            "relative_humidity",
+            "air_quality",
+            "filter_left_time",
+            "filter_life_level",
+            "fault",
+        ],
+        "help_examples": {
+            "模式": ["自动", "睡眠", "最爱"],
+            "童锁": ["开", "关"],
+            "提示音": ["开", "关"],
+            "屏幕": ["息屏", "微亮", "正常"],
+            "风速": ["0", "1", "5", "10", "14"],
+        },
+        "help_hints": {
+            "风速": "可输入 0~14 的整数档位；通常仅在“最爱”模式下更有意义",
+            "屏幕": "支持：息屏 / 微亮 / 正常",
+            "模式": "支持：自动 / 睡眠 / 最爱",
+        },
+    },
+}
+
 
 def normalize_category(category: str) -> str:
     category = str(category or "").strip()
     return category if category in VALID_CATEGORIES else CATEGORY_NONE
 
 
-def get_profile(category: str) -> Dict[str, Any]:
+def normalize_model(model: str) -> str:
+    return str(model or "").strip()
+
+
+def get_model_profile(model: str) -> Dict[str, Any]:
+    model = normalize_model(model)
+    if not model:
+        return {}
+    return MODEL_PROFILES.get(model, {})
+
+
+def get_category_profile(category: str) -> Dict[str, Any]:
     category = normalize_category(category)
     return CATEGORY_PROFILES.get(category, {})
 
 
-def get_device_prop_map(category: str) -> Dict[str, str]:
-    profile = get_profile(category)
+def resolve_profile(model: str = "", category: str = "") -> Dict[str, Any]:
+    """
+    解析优先级：
+    1. model 精确模板
+    2. category 类别模板
+    3. 空字典（表示无类别模板）
+    """
+    model_profile = get_model_profile(model)
+    if model_profile:
+        return model_profile
+
+    category_profile = get_category_profile(category)
+    if category_profile:
+        return category_profile
+
+    return {}
+
+
+def resolve_effective_category(model: str = "", category: str = "") -> str:
+    """
+    返回当前设备最终生效的类别：
+    1. 若 model 模板存在，优先取其声明的 category
+    2. 若 model 未命中，则使用传入的 category
+    3. 最终无法确定时返回 无类别
+    """
+    model_profile = get_model_profile(model)
+    if model_profile:
+        model_category = normalize_category(model_profile.get("category", ""))
+        if model_category != CATEGORY_NONE:
+            return model_category
+
+    return normalize_category(category)
+
+
+def get_device_prop_map(model: str = "", category: str = "") -> Dict[str, str]:
+    profile = resolve_profile(model=model, category=category)
     return {**GLOBAL_PROP_MAP, **profile.get("prop_map", {})}
 
 
-def get_device_val_map(category: str) -> Dict[str, Any]:
-    profile = get_profile(category)
+def get_device_val_map(model: str = "", category: str = "") -> Dict[str, Any]:
+    profile = resolve_profile(model=model, category=category)
     return {**GLOBAL_VAL_MAP, **profile.get("value_map", {})}
 
 
-def get_device_display_map(category: str) -> Dict[str, str]:
-    profile = get_profile(category)
+def get_device_display_map(model: str = "", category: str = "") -> Dict[str, str]:
+    profile = resolve_profile(model=model, category=category)
     return {**GLOBAL_DISPLAY_MAP, **profile.get("display_map", {})}
 
 
-def get_reverse_prop_map(category: str) -> Dict[str, str]:
-    forward_map = get_device_prop_map(category)
+def get_reverse_prop_map(model: str = "", category: str = "") -> Dict[str, str]:
+    forward_map = get_device_prop_map(model=model, category=category)
     return {v: k for k, v in forward_map.items()}
 
 
-def get_device_detail_writable_keys(category: str) -> List[str]:
-    profile = get_profile(category)
+def get_device_detail_writable_keys(model: str = "", category: str = "") -> List[str]:
+    profile = resolve_profile(model=model, category=category)
     return profile.get("detail_writable", [])
 
 
-def get_device_detail_readable_keys(category: str) -> List[str]:
-    profile = get_profile(category)
+def get_device_detail_readable_keys(model: str = "", category: str = "") -> List[str]:
+    profile = resolve_profile(model=model, category=category)
     return profile.get("detail_readable", [])
 
 
-def get_device_help_examples(category: str) -> Dict[str, List[str]]:
-    profile = get_profile(category)
+def get_device_help_examples(model: str = "", category: str = "") -> Dict[str, List[str]]:
+    profile = resolve_profile(model=model, category=category)
     return profile.get("help_examples", {})
 
 
-def get_device_help_hints(category: str) -> Dict[str, str]:
-    profile = get_profile(category)
+def get_device_help_hints(model: str = "", category: str = "") -> Dict[str, str]:
+    profile = resolve_profile(model=model, category=category)
     return profile.get("help_hints", {})
