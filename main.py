@@ -22,12 +22,14 @@ from .device_profiles import (
     get_device_help_examples,
     get_device_help_hints,
     resolve_effective_category,
+    has_model_profile,
+    get_model_hidden_props,
 )
 
 PLUGIN_NAME = "astrbot_plugin_mihome"
 
 
-@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "6.4.0")
+@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "6.5.0")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -210,7 +212,7 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家详情")
     async def mihome_device_detail(self, event: AstrMessageEvent):
-        """查看设备详情；优先按 model 精确模板匹配，未命中再回退到 category，最后回退为无类别。"""
+        """查看设备详情；model 命中视为完美适配，category 命中则保留模板外原始属性提示。"""
         device_map = self._parse_device_map()
         category_map = self._parse_category_map()
 
@@ -239,6 +241,8 @@ class MiHomeControlPlugin(Star):
         did = device_map[alias]
         configured_category = normalize_category(category_map.get(alias, CATEGORY_NONE))
         model = self._get_model_by_did(did)
+        model_hit = has_model_profile(model)
+        hidden_props = set(get_model_hidden_props(model))
         category = resolve_effective_category(model=model, category=configured_category)
         cloud_name = self._get_cloud_name_by_did(did)
 
@@ -297,6 +301,10 @@ class MiHomeControlPlugin(Star):
                 cap = await self.client.get_device_capabilities(did)
                 raw_items = cap.get("all_props", [])
 
+                # 对完美适配 model：只展示模板内已知项，不再暴露模板外原始属性
+                if model_hit:
+                    raw_items = [k for k in raw_items if k in fallback_readables]
+
                 stage2_lines.append("📡 已知状态项 (当前实况获取失败或无数据):")
                 if raw_items:
                     stage2_lines.append(", ".join(raw_items))
@@ -327,18 +335,28 @@ class MiHomeControlPlugin(Star):
                 stage2_lines.append("📡 已知状态项 (当前实况获取失败或无数据):")
                 stage2_lines.append(", ".join(filtered_missing))
 
-            cap = await self.client.get_device_capabilities(did)
-            all_props = set(cap.get("all_props", []))
-            known_template = set(fallback_writables) | set(fallback_readables)
-            extra_raw = sorted(all_props - known_template)
+            # 只有 category 兜底模板设备，才显示模板外原始属性
+            if not model_hit:
+                cap = await self.client.get_device_capabilities(did)
+                all_props = set(cap.get("all_props", []))
+                all_props = {k for k in all_props if k not in hidden_props}
+                known_template = set(fallback_writables) | set(fallback_readables)
+                extra_raw = sorted(all_props - known_template)
 
-            if extra_raw:
-                if stage2_lines:
-                    stage2_lines.append("")
-                stage2_lines.append("🔍 未纳入当前中文模板的原始属性:")
-                stage2_lines.append(", ".join(extra_raw))
+                if extra_raw:
+                    if stage2_lines:
+                        stage2_lines.append("")
+                    stage2_lines.append("🔍 未纳入当前中文模板的原始属性:")
+                    stage2_lines.append(", ".join(extra_raw))
 
             if not stage2_lines:
+                cap = await self.client.get_device_capabilities(did)
+                all_props = set(cap.get("all_props", []))
+                if model_hit:
+                    all_props = {k for k in all_props if k in set(fallback_readables) | set(fallback_writables)}
+                else:
+                    all_props = {k for k in all_props if k not in hidden_props}
+
                 if all_props:
                     stage2_lines.append("📡 已知状态项 (当前实况获取失败或无数据):")
                     stage2_lines.append(", ".join(sorted(all_props)))
@@ -411,8 +429,10 @@ class MiHomeControlPlugin(Star):
             msg_lines.append("")
 
         msg_lines.append("常用控制示例:")
-        msg_lines.append(f"- /米家控制 {alias} 开")
-        msg_lines.append(f"- /米家控制 {alias} 关")
+
+        if "on" in fallback_writables:
+            msg_lines.append(f"- /米家控制 {alias} 开")
+            msg_lines.append(f"- /米家控制 {alias} 关")
 
         advanced_props = [k for k in fallback_writables if k != "on"]
         if advanced_props:
@@ -425,6 +445,10 @@ class MiHomeControlPlugin(Star):
                 for eng_k in advanced_props:
                     prop_cn = reverse_prop_map.get(eng_k, eng_k)
                     msg_lines.append(f"- /米家控制 {alias} {prop_cn} [对应值]")
+
+        if len(msg_lines) <= 2:
+            msg_lines.append("该设备当前以状态查看为主，暂无推荐控制项。")
+            msg_lines.append(f"💡 可发送 /米家详情 {alias} 查看实时状态。")
 
         yield event.plain_result("\n".join(msg_lines))
 
