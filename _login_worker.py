@@ -3,8 +3,8 @@ import sys
 import logging
 from pathlib import Path
 
-logging.basicConfig(level=logging.DEBUG)
-logging.getLogger("mijiaAPI").setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("mijiaAPI").setLevel(logging.INFO)
 
 try:
     from mijiaAPI import mijiaAPI
@@ -28,7 +28,7 @@ def main():
         api.login()
         print("\n[WORKER_SUCCESS] 授权完毕。", flush=True)
     except Exception as e:
-        print(f"\n[WORKER_ERROR] 登录流程失败: {type(e).__name__}", flush=True)
+        print(f"\n[WORKER_ERROR] 登录流程失败: {type(e).__name__}: {e}", flush=True)
         sys.exit(1)
 
 
