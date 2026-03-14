@@ -45,6 +45,10 @@ class MiHomeControlError(MiHomeClientError):
     pass
 
 
+class MiHomeSceneError(MiHomeClientError):
+    pass
+
+
 class MiHomeClient:
     def __init__(self, data_manager: MiHomeDataManager):
         self.data_manager = data_manager
@@ -91,6 +95,48 @@ class MiHomeClient:
             self.api.get_devices_list()
         return mijiaDevice(self.api, did=did, sleep_time=1.0)
 
+    def _normalize_scene_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        scene_id = str(
+            item.get("scene_id")
+            or item.get("id")
+            or item.get("sceneId")
+            or item.get("sceneid")
+            or ""
+        ).strip()
+
+        scene_name = str(
+            item.get("name")
+            or item.get("scene_name")
+            or item.get("sceneName")
+            or item.get("title")
+            or ""
+        ).strip()
+
+        home_id = str(
+            item.get("home_id")
+            or item.get("homeId")
+            or item.get("homeid")
+            or item.get("home")
+            or ""
+        ).strip()
+
+        home_name = str(
+            item.get("home_name")
+            or item.get("homeName")
+            or item.get("home_name_cn")
+            or item.get("family_name")
+            or item.get("familyName")
+            or ""
+        ).strip()
+
+        return {
+            "scene_id": scene_id,
+            "scene_name": scene_name,
+            "home_id": home_id,
+            "home_name": home_name,
+            "raw": item,
+        }
+
     async def get_login_status(self) -> Dict[str, Any]:
         state = self.data_manager.load_state()
         return {
@@ -126,6 +172,8 @@ class MiHomeClient:
                 last_shared_error="",
                 last_control_error="",
                 last_control_device="",
+                last_scene_error="",
+                last_scene_name="",
             )
             return ok
 
@@ -284,6 +332,79 @@ class MiHomeClient:
         except Exception as e:
             self.data_manager.update_state(last_login_error=f"系统级同步异常: {e}")
             raise MiHomeClientError(str(e)) from e
+
+    async def get_scenes(self) -> List[Dict[str, Any]]:
+        self._check_idle()
+        self._check_api()
+        try:
+            async with self._api_lock:
+                await asyncio.wait_for(asyncio.to_thread(self.api.login), timeout=15.0)
+                scenes = await asyncio.wait_for(
+                    asyncio.to_thread(self.api.get_scenes_list),
+                    timeout=20.0,
+                )
+
+            if not isinstance(scenes, list):
+                scenes = []
+
+            normalized = []
+            for item in scenes:
+                if isinstance(item, dict):
+                    normalized.append(self._normalize_scene_item(item))
+
+            self.data_manager.update_state(last_scene_error="")
+            return normalized
+
+        except asyncio.TimeoutError as e:
+            self.data_manager.update_state(last_scene_error="获取场景列表超时")
+            raise MiHomeClientError("获取场景列表超时，请检查网络") from e
+        except LoginError as e:
+            self.data_manager.update_state(last_scene_error=f"鉴权失效: {e}")
+            raise MiHomeAuthError(str(e)) from e
+        except SSLError as e:
+            self.data_manager.update_state(last_scene_error=f"SSL异常: {e}")
+            raise MiHomeClientError(f"云端通信安全建立失败: {e}") from e
+        except RequestException as e:
+            self.data_manager.update_state(last_scene_error=f"网络异常: {type(e).__name__}")
+            raise MiHomeClientError(f"请求失败: {e}") from e
+        except APIError as e:
+            self.data_manager.update_state(last_scene_error=f"云端接口异常: {e}")
+            raise MiHomeClientError(str(e)) from e
+        except Exception as e:
+            self.data_manager.update_state(last_scene_error=f"场景获取异常: {e}")
+            raise MiHomeClientError(str(e)) from e
+
+    async def run_scene(self, scene_id: str, home_id: str = "", scene_name: str = "") -> None:
+        self._check_idle()
+        self._check_api()
+        scene_id = str(scene_id or "").strip()
+        home_id = str(home_id or "").strip()
+
+        if not scene_id:
+            raise MiHomeSceneError("scene_id 不能为空")
+
+        try:
+            async with self._api_lock:
+                logger.info(f"[MiHome] 执行场景: scene_id={scene_id}, home_id={home_id}, scene_name={scene_name}")
+                await asyncio.wait_for(asyncio.to_thread(self.api.login), timeout=15.0)
+
+                kwargs = {"scene_id": scene_id}
+                if home_id:
+                    kwargs["home_id"] = home_id
+
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.api.run_scene, **kwargs),
+                    timeout=20.0,
+                )
+
+            self.data_manager.update_state(
+                last_scene_error="",
+                last_scene_name=scene_name or scene_id,
+                last_control_error="",
+                last_control_device=f"scene:{scene_name or scene_id}",
+            )
+        except Exception as e:
+            self._handle_scene_exception(e, scene_name or scene_id)
 
     async def get_device_capabilities(self, did: str) -> Dict[str, Any]:
         self._check_api()
@@ -535,6 +656,27 @@ class MiHomeClient:
             self.data_manager.update_state(last_control_error="", last_control_device=device_name or did)
         except Exception as e:
             self._handle_control_exception(e, device_name or did)
+
+    def _handle_scene_exception(self, e: Exception, scene_name: str):
+        if isinstance(e, asyncio.TimeoutError):
+            self.data_manager.update_state(last_scene_error="场景执行超时", last_scene_name=scene_name)
+            raise MiHomeClientError("执行场景超时，请检查网络") from e
+        elif isinstance(e, LoginError):
+            self.data_manager.update_state(last_scene_error=f"鉴权过期: {e}", last_scene_name=scene_name)
+            raise MiHomeAuthError(str(e)) from e
+        elif isinstance(e, APIError):
+            self.data_manager.update_state(last_scene_error=f"云端拒绝: {e}", last_scene_name=scene_name)
+            raise MiHomeClientError(f"云端拒绝请求: {e}") from e
+        elif isinstance(e, SSLError):
+            self.data_manager.update_state(last_scene_error=f"SSL异常: {e}", last_scene_name=scene_name)
+            raise MiHomeClientError(f"SSL 通信失败: {e}") from e
+        elif isinstance(e, RequestException):
+            self.data_manager.update_state(last_scene_error=f"网络异常: {type(e).__name__}", last_scene_name=scene_name)
+            raise MiHomeClientError(f"网络请求失败: {type(e).__name__}") from e
+        else:
+            logger.error(f"[MiHome] 场景异常: type={type(e).__name__}, detail={e}")
+            self.data_manager.update_state(last_scene_error=f"内部错误: {e}", last_scene_name=scene_name)
+            raise MiHomeSceneError(str(e)) from e
 
     def _handle_control_exception(self, e: Exception, device_name: str):
         if isinstance(e, asyncio.TimeoutError):
