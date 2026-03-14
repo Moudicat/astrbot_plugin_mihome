@@ -137,6 +137,13 @@ class MiHomeClient:
             "raw": item,
         }
 
+    def _save_scene_cache(self, scenes: List[Dict[str, Any]]) -> None:
+        self.data_manager.update_state(
+            scenes=scenes,
+            scene_cache_updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            last_scene_error="",
+        )
+
     async def get_login_status(self) -> Dict[str, Any]:
         state = self.data_manager.load_state()
         return {
@@ -147,6 +154,9 @@ class MiHomeClient:
             "last_shared_error": state.get("last_shared_error", ""),
             "last_control_error": state.get("last_control_error", ""),
             "last_control_device": state.get("last_control_device", ""),
+            "last_scene_error": state.get("last_scene_error", ""),
+            "last_scene_name": state.get("last_scene_name", ""),
+            "scene_cache_updated_at": state.get("scene_cache_updated_at", ""),
         }
 
     async def logout(self) -> bool:
@@ -334,14 +344,21 @@ class MiHomeClient:
             raise MiHomeClientError(str(e)) from e
 
     async def get_scenes(self) -> List[Dict[str, Any]]:
+        """
+        读取云端场景列表：
+        - 首次超时 30s
+        - 若首次超时，则轻量重试 1 次，超时 10s
+        - 成功后写入缓存
+        """
         self._check_idle()
         self._check_api()
-        try:
+
+        async def _fetch_once(timeout_sec: float) -> List[Dict[str, Any]]:
             async with self._api_lock:
                 await asyncio.wait_for(asyncio.to_thread(self.api.login), timeout=15.0)
                 scenes = await asyncio.wait_for(
                     asyncio.to_thread(self.api.get_scenes_list),
-                    timeout=20.0,
+                    timeout=timeout_sec,
                 )
 
             if not isinstance(scenes, list):
@@ -351,8 +368,17 @@ class MiHomeClient:
             for item in scenes:
                 if isinstance(item, dict):
                     normalized.append(self._normalize_scene_item(item))
+            return normalized
 
-            self.data_manager.update_state(last_scene_error="")
+        try:
+            try:
+                normalized = await _fetch_once(30.0)
+            except asyncio.TimeoutError:
+                logger.warning("[MiHome] 首次获取场景列表超时，进行一次轻量重试...")
+                await asyncio.sleep(0.6)
+                normalized = await _fetch_once(10.0)
+
+            self._save_scene_cache(normalized)
             return normalized
 
         except asyncio.TimeoutError as e:
