@@ -39,7 +39,7 @@ from .device_profiles import (
 PLUGIN_NAME = "astrbot_plugin_mihome"
 
 
-@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "6.5.0")
+@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "6.5.1")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -290,6 +290,7 @@ class MiHomeControlPlugin(Star):
             lines.append("- /米家场景 场景名")
             lines.append("- /米家场景 scene_id")
             lines.append("⚠️ 若存在同名场景，系统会要求你改用 scene_id 执行。")
+            lines.append("🧠 场景缓存已更新，可供大模型场景 Tool 使用。")
             yield event.plain_result("\n".join(lines))
         except MiHomeAuthError:
             yield event.plain_result("❌ 鉴权失效，请重新登录。")
@@ -837,7 +838,7 @@ class MiHomeControlPlugin(Star):
             yield event.plain_result("❌ 内部错误。")
 
     @filter.llm_tool(name="list_cached_mihome_scenes")
-    async def list_cached_mihome_scenes_tool(self, event: AstrMessageEvent):
+    async def list_cached_mihome_scenes_tool(self, event: AstrMessageEvent) -> str:
         """
         读取本插件缓存的米家场景列表（只读工具）。
         使用限制：
@@ -847,25 +848,24 @@ class MiHomeControlPlugin(Star):
         4. 若缓存为空，应提示用户先手动执行 /米家场景列表 完成同步。
         """
         if not self._scene_tool_enabled():
-            yield event.plain_result("米家场景 Tool 当前未启用。")
-            return
+            return "米家场景 Tool 当前未启用。"
 
         scenes = self._get_cached_scenes()
         updated_at = self._get_scene_cache_updated_at()
 
         if not scenes:
-            yield event.plain_result("当前没有已缓存的米家场景列表，请先手动执行 /米家场景列表 同步场景。")
-            return
+            return "当前没有已缓存的米家场景列表，请先手动执行 /米家场景列表 同步场景。"
 
         lines = [f"当前已缓存 {len(scenes)} 个米家场景："]
         for idx, item in enumerate(scenes, 1):
             lines.append(self._format_scene_line(idx, item))
         if updated_at:
             lines.append(f"\n缓存更新时间：{updated_at}")
-        yield event.plain_result("\n".join(lines))
+
+        return "\n".join(lines)
 
     @filter.llm_tool(name="execute_mihome_scene")
-    async def execute_mihome_scene_tool(self, event: AstrMessageEvent, scene_name: str):
+    async def execute_mihome_scene_tool(self, event: AstrMessageEvent, scene_name: str) -> str:
         """
         执行米家云端场景。
         使用限制（必须遵守）：
@@ -885,24 +885,19 @@ class MiHomeControlPlugin(Star):
             scene_name(string): 需要执行的米家场景名称或 scene_id
         """
         if not self._scene_tool_enabled():
-            yield event.plain_result("米家场景 Tool 当前未启用。")
-            return
+            return "米家场景 Tool 当前未启用。"
 
         try:
             scene, err = await self._resolve_scene_query(scene_name, prefer_cache=True)
 
             if err == "empty_list":
-                yield event.plain_result("当前没有已缓存的米家场景列表，请先手动执行 /米家场景列表 同步场景。")
-                return
+                return "当前没有已缓存的米家场景列表，请先手动执行 /米家场景列表 同步场景。"
             if err == "not_found":
-                yield event.plain_result(f"未在缓存中找到米家场景：{scene_name}。请先确认场景名，或先执行 /米家场景列表 刷新。")
-                return
+                return f"未在缓存中找到米家场景：{scene_name}。请先确认场景名，或先执行 /米家场景列表 刷新。"
             if err and err not in ("empty", "empty_list", "not_found"):
-                yield event.plain_result(err)
-                return
+                return err
             if not scene:
-                yield event.plain_result("无法解析要执行的米家场景。")
-                return
+                return "无法解析要执行的米家场景。"
 
             final_scene_name = scene.get("scene_name") or "未命名场景"
             final_scene_id = scene.get("scene_id") or ""
@@ -913,15 +908,15 @@ class MiHomeControlPlugin(Star):
                 home_id=final_home_id,
                 scene_name=final_scene_name,
             )
-            yield event.plain_result(f"已成功执行米家场景：{final_scene_name}")
+            return f"已成功执行米家场景：{final_scene_name}"
         except MiHomeAuthError:
-            yield event.plain_result("米家登录已失效，请先重新登录。")
+            return "米家登录已失效，请先重新登录。"
         except MiHomeSceneError as e:
-            yield event.plain_result(f"场景执行失败：{e}")
+            return f"场景执行失败：{e}"
         except MiHomeClientError as e:
-            yield event.plain_result(f"场景执行异常：{e}")
+            return f"场景执行异常：{e}"
         except Exception as e:
-            yield event.plain_result(f"内部错误：{e}")
+            return f"内部错误：{e}"
 
     async def terminate(self):
         await self.client.terminate()
