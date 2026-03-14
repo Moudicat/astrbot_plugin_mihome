@@ -16,10 +16,14 @@ from .device_profiles import (
     get_device_prop_map,
     get_device_val_map,
     get_device_display_map,
+    get_device_action_map,
     get_reverse_prop_map,
+    get_reverse_action_map,
     get_device_detail_writable_keys,
     get_device_detail_readable_keys,
+    get_device_detail_actions,
     get_device_help_examples,
+    get_device_action_examples,
     get_device_help_hints,
     resolve_effective_category,
     has_model_profile,
@@ -108,6 +112,9 @@ class MiHomeControlPlugin(Star):
 
         return val_str
 
+    def _normalize_action_token(self, s: str) -> str:
+        return str(s or "").strip().lower().replace("-", "_").replace(" ", "_")
+
     def _get_cloud_name_by_did(self, did: str) -> str:
         state = self.data_manager.load_state()
         did_to_name = state.get("did_to_name", {})
@@ -121,7 +128,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家登录")
     async def mihome_login(self, event: AstrMessageEvent):
-        """拉起米家扫码登录。"""
         yield event.plain_result("⏳ 正在拉起独立沙盒环境...")
 
         async def cb(url):
@@ -144,7 +150,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家状态")
     async def mihome_status(self, event: AstrMessageEvent):
-        """查看当前登录状态与最近控制结果。"""
         s = await self.client.get_login_status()
         last_device = s["last_control_device"] or "无"
         last_result = "未发生" if not s["last_control_device"] else ("失败" if s["last_control_error"] else "成功")
@@ -159,7 +164,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家登出")
     async def mihome_logout(self, event: AstrMessageEvent):
-        """清理登录凭证。"""
         yield event.plain_result("⏳ 正在登出...")
         try:
             ok = await self.client.logout()
@@ -171,7 +175,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("刷新米家")
     async def refresh_mihome_devices(self, event: AstrMessageEvent):
-        """同步米家设备列表。"""
         yield event.plain_result("⏳ 正在同步设备列表...")
         device_map = self._parse_device_map()
 
@@ -212,7 +215,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家详情")
     async def mihome_device_detail(self, event: AstrMessageEvent):
-        """查看设备详情；model 命中视为完美适配，category 命中则保留模板外原始属性提示。"""
         device_map = self._parse_device_map()
         category_map = self._parse_category_map()
 
@@ -258,11 +260,17 @@ class MiHomeControlPlugin(Star):
                 return
 
             all_props = cap.get("all_props", [])
+            actions = cap.get("actions", [])
+            lines = [f"✅ 【{alias}】支持的高级能力:"]
+            if cloud_name and cloud_name != alias:
+                lines.insert(1, f"☁️ 云端名称: {cloud_name}")
+
             if all_props:
-                lines = [f"✅ 【{alias}】支持的高级属性:"]
-                if cloud_name and cloud_name != alias:
-                    lines.insert(1, f"☁️ 云端名称: {cloud_name}")
-                lines.append(", ".join(all_props))
+                lines.append("属性: " + ", ".join(all_props))
+            if actions:
+                lines.append("动作: " + ", ".join(actions))
+
+            if len(lines) > 1:
                 yield event.plain_result("\n".join(lines))
             else:
                 yield event.plain_result(
@@ -273,17 +281,25 @@ class MiHomeControlPlugin(Star):
 
         display_map = get_device_display_map(model=model, category=category)
         reverse_prop_map = get_reverse_prop_map(model=model, category=category)
+        reverse_action_map = get_reverse_action_map(model=model, category=category)
         fallback_writables = get_device_detail_writable_keys(model=model, category=category)
         fallback_readables = get_device_detail_readable_keys(model=model, category=category)
+        fallback_actions = get_device_detail_actions(model=model, category=category)
 
         stage1_lines = [f"📖 【{alias}】:"]
 
         if cloud_name and cloud_name != alias:
             stage1_lines.append(f"☁️ 云端名称: {cloud_name}")
 
+        translated_controls = []
         if fallback_writables:
-            translated_writables = sorted(set(reverse_prop_map.get(w, w) for w in fallback_writables))
-            stage1_lines.append("✅ 可调属性: " + ", ".join(translated_writables))
+            translated_controls.extend(reverse_prop_map.get(w, w) for w in fallback_writables)
+        if fallback_actions:
+            translated_controls.extend(reverse_action_map.get(a, a) for a in fallback_actions)
+
+        if translated_controls:
+            translated_controls = sorted(set(translated_controls))
+            stage1_lines.append("✅ 可调属性: " + ", ".join(translated_controls))
 
         if fallback_readables:
             translated_readables = sorted(set(display_map.get(k, k) for k in fallback_readables))
@@ -301,7 +317,6 @@ class MiHomeControlPlugin(Star):
                 cap = await self.client.get_device_capabilities(did)
                 raw_items = cap.get("all_props", [])
 
-                # 对完美适配 model：只展示模板内已知项，不再暴露模板外原始属性
                 if model_hit:
                     raw_items = [k for k in raw_items if k in fallback_readables]
 
@@ -335,7 +350,6 @@ class MiHomeControlPlugin(Star):
                 stage2_lines.append("📡 已知状态项 (当前实况获取失败或无数据):")
                 stage2_lines.append(", ".join(filtered_missing))
 
-            # 只有 category 兜底模板设备，才显示模板外原始属性
             if not model_hit:
                 cap = await self.client.get_device_capabilities(did)
                 all_props = set(cap.get("all_props", []))
@@ -372,7 +386,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家帮助")
     async def mihome_control_help(self, event: AstrMessageEvent):
-        """查看设备控制帮助；优先按 model 精确模板匹配，未命中再回退到 category，最后回退为无类别。"""
         device_map = self._parse_device_map()
         category_map = self._parse_category_map()
 
@@ -409,15 +422,20 @@ class MiHomeControlPlugin(Star):
                 f"- /米家控制 {alias} 开\n"
                 f"- /米家控制 {alias} 关\n\n"
                 f"高级格式:\n"
-                f"- /米家控制 {alias} [属性] [值]\n\n"
-                f"💡 若你已知道设备的原始英文属性，可直接透传，例如：\n"
-                f"- /米家控制 {alias} mode 1"
+                f"- /米家控制 {alias} [属性] [值]\n"
+                f"- /米家控制 {alias} [原始动作名]\n\n"
+                f"💡 若你已知道设备的原始英文属性或动作，可直接透传，例如：\n"
+                f"- /米家控制 {alias} mode 1\n"
+                f"- /米家控制 {alias} start_sweep"
             )
             return
 
         reverse_prop_map = get_reverse_prop_map(model=model, category=category)
+        reverse_action_map = get_reverse_action_map(model=model, category=category)
         fallback_writables = get_device_detail_writable_keys(model=model, category=category)
+        fallback_actions = get_device_detail_actions(model=model, category=category)
         help_examples = get_device_help_examples(model=model, category=category)
+        action_examples = get_device_action_examples(model=model, category=category)
         help_hints = get_device_help_hints(model=model, category=category)
 
         msg_lines = [f"✅ 【{alias}】控制指南:"]
@@ -426,6 +444,12 @@ class MiHomeControlPlugin(Star):
             translated_writables = sorted(set(reverse_prop_map.get(w, w) for w in fallback_writables))
             msg_lines.append("支持控制的属性:")
             msg_lines.append(", ".join(translated_writables))
+            msg_lines.append("")
+
+        if fallback_actions:
+            translated_actions = sorted(set(reverse_action_map.get(a, a) for a in fallback_actions))
+            msg_lines.append("支持执行的动作:")
+            msg_lines.append(", ".join(translated_actions))
             msg_lines.append("")
 
         msg_lines.append("常用控制示例:")
@@ -446,6 +470,10 @@ class MiHomeControlPlugin(Star):
                     prop_cn = reverse_prop_map.get(eng_k, eng_k)
                     msg_lines.append(f"- /米家控制 {alias} {prop_cn} [对应值]")
 
+        if action_examples:
+            for act_cn in action_examples:
+                msg_lines.append(f"- /米家控制 {alias} {act_cn}")
+
         if len(msg_lines) <= 2:
             msg_lines.append("该设备当前以状态查看为主，暂无推荐控制项。")
             msg_lines.append(f"💡 可发送 /米家详情 {alias} 查看实时状态。")
@@ -455,7 +483,6 @@ class MiHomeControlPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家控制")
     async def control_mihome_device(self, event: AstrMessageEvent):
-        """控制米家设备；优先按 model 精确模板匹配，未命中再回退到 category，最后回退为无类别。"""
         device_map = self._parse_device_map()
         category_map = self._parse_category_map()
 
@@ -469,7 +496,8 @@ class MiHomeControlPlugin(Star):
                 "格式：/米家控制 [设备名] [动作/属性] [值]\n"
                 "示例：\n"
                 "/米家控制 空调 开\n"
-                "/米家控制 空调 温度 26"
+                "/米家控制 空调 温度 26\n"
+                "/米家控制 扫地机 开始清扫"
             )
             return
 
@@ -499,14 +527,79 @@ class MiHomeControlPlugin(Star):
 
         prop_map = get_device_prop_map(model=model, category=category)
         val_map = get_device_val_map(model=model, category=category)
+        action_map = get_device_action_map(model=model, category=category)
+
+        prop_alias_norm = {str(k).strip().lower(): v for k, v in prop_map.items()}
+
+        action_alias_norm = {
+            self._normalize_action_token(k): v
+            for k, v in action_map.items()
+        }
+        action_raw_norm = {
+            self._normalize_action_token(v): v
+            for v in action_map.values()
+        }
+
+        capability_actions = {}
+        try:
+            cap = await self.client.get_device_capabilities(did)
+            for act in cap.get("actions", []):
+                capability_actions[self._normalize_action_token(act)] = act
+        except Exception as e:
+            logger.debug(f"[MiHome] 动态动作菜单探测失败: {e}")
+
+        full_command_norm = self._normalize_action_token(" ".join(remaining_parts))
+        compact_command_norm = self._normalize_action_token("".join(remaining_parts))
+
+        matched_action = None
+        if full_command_norm in action_alias_norm:
+            matched_action = action_alias_norm[full_command_norm]
+        elif compact_command_norm in action_alias_norm:
+            matched_action = action_alias_norm[compact_command_norm]
+        elif full_command_norm in action_raw_norm:
+            matched_action = action_raw_norm[full_command_norm]
+        elif compact_command_norm in action_raw_norm:
+            matched_action = action_raw_norm[compact_command_norm]
+        elif full_command_norm in capability_actions:
+            matched_action = capability_actions[full_command_norm]
+        elif compact_command_norm in capability_actions:
+            matched_action = capability_actions[compact_command_norm]
+
+        if matched_action:
+            yield event.plain_result(f"⏳ 正在向【{alias}】执行动作 [{matched_action}]...")
+            try:
+                await self.client.run_action(did, matched_action, alias)
+                yield event.plain_result("✅ 动作执行成功！")
+            except MiHomeAuthError:
+                yield event.plain_result("❌ 鉴权失效，请重新登录。")
+            except MiHomeControlError as e:
+                err = str(e)
+                if err == "device_not_found":
+                    yield event.plain_result("❌ 云端找不到设备。")
+                elif err == "device_rejected":
+                    yield event.plain_result(
+                        f"❌ 设备拒绝执行该动作。\n💡 提示: 发送 /米家帮助 {alias} 检查动作是否支持。"
+                    )
+                else:
+                    yield event.plain_result(f"❌ 动作执行失败: {err}")
+            except MiHomeClientError as e:
+                yield event.plain_result(f"❌ API/网络异常: {e}")
+            except Exception:
+                yield event.plain_result("❌ 内部错误。")
+            return
 
         if len(remaining_parts) == 1:
             token = remaining_parts[0]
             token_lower = token.lower()
+            token_action_norm = self._normalize_action_token(token)
 
             prop_values_lower = {str(v).lower() for v in prop_map.values()}
-            prop_alias_norm = {str(k).strip().lower(): v for k, v in prop_map.items()}
             is_prop_candidate = (token_lower in prop_alias_norm) or (token_lower in prop_values_lower)
+            is_action_candidate = (
+                token_action_norm in action_alias_norm
+                or token_action_norm in action_raw_norm
+                or token_action_norm in capability_actions
+            )
 
             if token_lower in self.action_alias:
                 yield event.plain_result(f"⏳ 正在向【{alias}】下发开关指令...")
@@ -531,6 +624,34 @@ class MiHomeControlPlugin(Star):
                     yield event.plain_result("❌ 内部错误。")
                 return
 
+            elif is_action_candidate:
+                eng_action = (
+                    action_alias_norm.get(token_action_norm)
+                    or action_raw_norm.get(token_action_norm)
+                    or capability_actions.get(token_action_norm)
+                )
+                yield event.plain_result(f"⏳ 正在向【{alias}】执行动作 [{eng_action}]...")
+                try:
+                    await self.client.run_action(did, eng_action, alias)
+                    yield event.plain_result("✅ 动作执行成功！")
+                except MiHomeAuthError:
+                    yield event.plain_result("❌ 鉴权失效，请重新登录。")
+                except MiHomeControlError as e:
+                    err = str(e)
+                    if err == "device_not_found":
+                        yield event.plain_result("❌ 云端找不到设备。")
+                    elif err == "device_rejected":
+                        yield event.plain_result(
+                            f"❌ 设备拒绝执行该动作。\n💡 提示: 发送 /米家帮助 {alias} 检查动作是否支持。"
+                        )
+                    else:
+                        yield event.plain_result(f"❌ 动作执行失败: {err}")
+                except MiHomeClientError as e:
+                    yield event.plain_result(f"❌ API/网络异常: {e}")
+                except Exception:
+                    yield event.plain_result("❌ 内部错误。")
+                return
+
             elif is_prop_candidate:
                 yield event.plain_result(f"❌ 缺少属性值。\n💡 提示: 发送 /米家帮助 {alias} 查看该设备的控制范例。")
                 return
@@ -545,7 +666,6 @@ class MiHomeControlPlugin(Star):
         raw_prop = remaining_parts[0]
         raw_val_str = " ".join(remaining_parts[1:])
 
-        prop_alias_norm = {str(k).strip().lower(): v for k, v in prop_map.items()}
         prop = prop_alias_norm.get(raw_prop.strip().lower(), raw_prop.strip())
 
         raw_val_norm = raw_val_str.strip()
@@ -576,5 +696,4 @@ class MiHomeControlPlugin(Star):
             yield event.plain_result("❌ 内部错误。")
 
     async def terminate(self):
-        """插件卸载时释放资源。"""
         await self.client.terminate()
