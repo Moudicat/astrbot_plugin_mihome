@@ -1,6 +1,6 @@
 # 🌟 AstrBot MiHome Control
 
-基于 [AstrBot](https://github.com/Soulter/AstrBot) 框架开发的米家智能家居云端控制插件。
+基于 [AstrBot](https://github.com/Soulter/AstrBot) 框架开发的支持自然语言调用的米家智能家居云端控制插件。
 
 <div align="center">
 
