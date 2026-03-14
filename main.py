@@ -9,7 +9,13 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 
 from .data_manager import MiHomeDataManager
-from .mihome_client import MiHomeClient, MiHomeAuthError, MiHomeControlError, MiHomeClientError
+from .mihome_client import (
+    MiHomeClient,
+    MiHomeAuthError,
+    MiHomeControlError,
+    MiHomeClientError,
+    MiHomeSceneError,
+)
 from .device_profiles import (
     normalize_category,
     CATEGORY_NONE,
@@ -33,7 +39,7 @@ from .device_profiles import (
 PLUGIN_NAME = "astrbot_plugin_mihome"
 
 
-@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "6.5.0")
+@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "7.0.0")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -115,6 +121,9 @@ class MiHomeControlPlugin(Star):
     def _normalize_action_token(self, s: str) -> str:
         return str(s or "").strip().lower().replace("-", "_").replace(" ", "_")
 
+    def _scene_tool_enabled(self) -> bool:
+        return bool(self.config.get("enable_scene_tool", False))
+
     def _get_cloud_name_by_did(self, did: str) -> str:
         state = self.data_manager.load_state()
         did_to_name = state.get("did_to_name", {})
@@ -124,6 +133,46 @@ class MiHomeControlPlugin(Star):
         state = self.data_manager.load_state()
         did_to_model = state.get("did_to_model", {})
         return str(did_to_model.get(did, "")).strip()
+
+    def _format_scene_line(self, idx: int, scene: Dict[str, Any]) -> str:
+        scene_name = scene.get("scene_name") or "未命名场景"
+        scene_id = scene.get("scene_id") or "unknown"
+        home_name = scene.get("home_name") or "未知家庭"
+        home_id = scene.get("home_id") or ""
+        if home_id:
+            return f"{idx}. {scene_name}  [scene_id={scene_id}]  (家庭: {home_name} / {home_id})"
+        return f"{idx}. {scene_name}  [scene_id={scene_id}]  (家庭: {home_name})"
+
+    async def _resolve_scene_query(self, query: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        query = str(query or "").strip()
+        if not query:
+            return None, "empty"
+
+        scenes = await self.client.get_scenes()
+        if not scenes:
+            return None, "empty_list"
+
+        # 1. scene_id 精确匹配
+        exact_id = [s for s in scenes if str(s.get("scene_id", "")).strip() == query]
+        if exact_id:
+            return exact_id[0], None
+
+        # 2. 场景名精确匹配
+        exact_name = [s for s in scenes if str(s.get("scene_name", "")).strip() == query]
+        if len(exact_name) == 1:
+            return exact_name[0], None
+        if len(exact_name) > 1:
+            lines = [
+                f"⚠️ 场景名“{query}”命中了多个结果，请改用 scene_id 执行："
+            ]
+            for idx, item in enumerate(exact_name, 1):
+                lines.append(self._format_scene_line(idx, item))
+            lines.append("\n💡 建议：")
+            lines.append("- 优先使用 scene_id 执行")
+            lines.append("- 或在米家 App 中将同名场景改成更容易区分的名称")
+            return None, "\n".join(lines)
+
+        return None, "not_found"
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家登录")
@@ -205,12 +254,94 @@ class MiHomeControlPlugin(Star):
                 else:
                     res.append(f"{i}. 【{alias_str}】({cloud_name}) [] ({did_str})")
 
-            res.append("\n💡 提示: 发送 /米家详情 [别名] 可查看设备实况，或发送 /米家帮助 [别名] 获取控制示例。")
+            res.append("\n💡 提示: 发送 /米家详情 [别名] 可查看设备实况，发送 /米家帮助 [别名] 获取控制示例，发送 /米家场景列表 查看云端场景。")
             yield event.plain_result("\n".join(res))
         except MiHomeClientError as e:
             yield event.plain_result(f"❌ 同步设备失败: {e}")
         except Exception as e:
             yield event.plain_result(f"❌ 未知同步异常: {e}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("米家场景列表")
+    async def mihome_scene_list(self, event: AstrMessageEvent):
+        yield event.plain_result("⏳ 正在同步米家云端场景列表...")
+        try:
+            scenes = await self.client.get_scenes()
+            if not scenes:
+                yield event.plain_result("⚠️ 当前账号下未发现可执行场景。")
+                return
+
+            lines = [f"✅ 找到 {len(scenes)} 个场景："]
+            for idx, item in enumerate(scenes, 1):
+                lines.append(self._format_scene_line(idx, item))
+
+            lines.append("\n💡 执行方式：")
+            lines.append("- /米家场景 场景名")
+            lines.append("- /米家场景 scene_id")
+            lines.append("⚠️ 若存在同名场景，系统会要求你改用 scene_id 执行。")
+            yield event.plain_result("\n".join(lines))
+        except MiHomeAuthError:
+            yield event.plain_result("❌ 鉴权失效，请重新登录。")
+        except MiHomeClientError as e:
+            yield event.plain_result(f"❌ 获取场景失败: {e}")
+        except Exception as e:
+            yield event.plain_result(f"❌ 内部错误: {e}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("米家场景")
+    async def mihome_scene_run(self, event: AstrMessageEvent):
+        msg = event.message_str.strip()
+        cmd_prefix = r"^/?米家场景\s*"
+        content = re.sub(cmd_prefix, "", msg).strip()
+
+        if not content:
+            yield event.plain_result(
+                "❌ 缺少参数。\n"
+                "格式：/米家场景 [场景名或scene_id]\n"
+                "示例：\n"
+                "/米家场景 晚安模式\n"
+                "/米家场景 123456789"
+            )
+            return
+
+        try:
+            scene, err = await self._resolve_scene_query(content)
+            if err == "empty_list":
+                yield event.plain_result("⚠️ 当前账号下未发现可执行场景。")
+                return
+            if err == "not_found":
+                yield event.plain_result(
+                    f"❌ 未找到场景：{content}\n"
+                    f"💡 可先发送 /米家场景列表 查看当前账号下的场景与 scene_id。"
+                )
+                return
+            if err and err not in ("empty", "empty_list", "not_found"):
+                yield event.plain_result(err)
+                return
+            if not scene:
+                yield event.plain_result("❌ 无法解析目标场景。")
+                return
+
+            scene_name = scene.get("scene_name") or "未命名场景"
+            scene_id = scene.get("scene_id") or ""
+            home_id = scene.get("home_id") or ""
+
+            yield event.plain_result(f"⏳ 正在执行米家场景【{scene_name}】...")
+
+            await self.client.run_scene(
+                scene_id=scene_id,
+                home_id=home_id,
+                scene_name=scene_name,
+            )
+            yield event.plain_result(f"✅ 场景执行成功：{scene_name}")
+        except MiHomeAuthError:
+            yield event.plain_result("❌ 鉴权失效，请重新登录。")
+        except MiHomeSceneError as e:
+            yield event.plain_result(f"❌ 场景执行失败: {e}")
+        except MiHomeClientError as e:
+            yield event.plain_result(f"❌ API/网络异常: {e}")
+        except Exception as e:
+            yield event.plain_result(f"❌ 内部错误: {e}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("米家详情")
@@ -694,6 +825,52 @@ class MiHomeControlPlugin(Star):
             yield event.plain_result(f"❌ API/网络异常: {e}")
         except Exception:
             yield event.plain_result("❌ 内部错误。")
+
+    @filter.llm_tool(name="execute_mihome_scene")
+    async def execute_mihome_scene_tool(self, event: AstrMessageEvent, scene_name: str):
+        """
+        执行米家云端场景。
+        Args:
+            scene_name(string): 需要执行的米家场景名称或 scene_id
+        """
+        if not self._scene_tool_enabled():
+            yield event.plain_result("米家场景 Tool 当前未启用。")
+            return
+
+        try:
+            scene, err = await self._resolve_scene_query(scene_name)
+
+            if err == "empty_list":
+                yield event.plain_result("当前账号下没有可执行的米家场景。")
+                return
+            if err == "not_found":
+                yield event.plain_result(f"未找到米家场景：{scene_name}")
+                return
+            if err and err not in ("empty", "empty_list", "not_found"):
+                yield event.plain_result(err)
+                return
+            if not scene:
+                yield event.plain_result("无法解析要执行的米家场景。")
+                return
+
+            final_scene_name = scene.get("scene_name") or "未命名场景"
+            final_scene_id = scene.get("scene_id") or ""
+            final_home_id = scene.get("home_id") or ""
+
+            await self.client.run_scene(
+                scene_id=final_scene_id,
+                home_id=final_home_id,
+                scene_name=final_scene_name,
+            )
+            yield event.plain_result(f"已成功执行米家场景：{final_scene_name}")
+        except MiHomeAuthError:
+            yield event.plain_result("米家登录已失效，请先重新登录。")
+        except MiHomeSceneError as e:
+            yield event.plain_result(f"场景执行失败：{e}")
+        except MiHomeClientError as e:
+            yield event.plain_result(f"场景执行异常：{e}")
+        except Exception as e:
+            yield event.plain_result(f"内部错误：{e}")
 
     async def terminate(self):
         await self.client.terminate()
