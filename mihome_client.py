@@ -14,6 +14,7 @@ from mijiaAPI import (
     DeviceNotFoundError,
     DeviceSetError,
     DeviceGetError,
+    DeviceActionError,
     APIError,
 )
 
@@ -72,6 +73,8 @@ class MiHomeClient:
             "rpm": " rpm",
             "minutes": " 分钟",
             "days": " 天",
+            "hours": " 小时",
+            "seconds": " 秒",
             "μg/m3": " μg/m3",
             "ug/m3": " μg/m3",
         }
@@ -283,15 +286,6 @@ class MiHomeClient:
             raise MiHomeClientError(str(e)) from e
 
     async def get_device_capabilities(self, did: str) -> Dict[str, Any]:
-        """
-        返回原始能力菜单：
-        {
-            "all_props": [...],
-            "writable": [...],
-            "readable": [...],
-            "__error__": "..."
-        }
-        """
         self._check_api()
         try:
             async with self._api_lock:
@@ -308,12 +302,18 @@ class MiHomeClient:
                     logger.debug(f"[MiHome] 读取 prop_list 失败: {e}")
                     prop_list = {}
 
-                if not prop_list:
-                    return {"all_props": [], "writable": [], "readable": []}
+                try:
+                    action_list = getattr(device, "action_list", {})
+                    if not isinstance(action_list, dict):
+                        action_list = {}
+                except Exception as e:
+                    logger.debug(f"[MiHome] 读取 action_list 失败: {e}")
+                    action_list = {}
 
                 all_props = []
                 writable = []
                 readable = []
+                actions = []
 
                 for raw_k, p_info in prop_list.items():
                     norm_k = self._normalize_key(raw_k)
@@ -332,14 +332,21 @@ class MiHomeClient:
                     if "read" in rw_set and norm_k not in readable:
                         readable.append(norm_k)
 
+                for raw_k in action_list.keys():
+                    norm_k = self._normalize_key(raw_k)
+                    if norm_k not in actions:
+                        actions.append(norm_k)
+
                 all_props.sort()
                 writable.sort()
                 readable.sort()
+                actions.sort()
 
                 return {
                     "all_props": all_props,
                     "writable": writable,
                     "readable": readable,
+                    "actions": actions,
                 }
 
         except asyncio.TimeoutError:
@@ -356,14 +363,6 @@ class MiHomeClient:
         did: str,
         readable_keys: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        返回统一结构：
-        {
-            "writable": [...],
-            "readable": {k: v},
-            "readable_keys": [...],
-        }
-        """
         self._check_api()
         try:
             async with self._api_lock:
@@ -519,6 +518,24 @@ class MiHomeClient:
         except Exception as e:
             self._handle_control_exception(e, device_name or did)
 
+    async def run_action(self, did: str, action: str, device_name: str = "") -> None:
+        self._check_idle()
+        self._check_api()
+        try:
+            async with self._api_lock:
+                logger.info(f"[MiHome] 执行动作控制: {device_name} ({did}) -> action={action}")
+                device = await asyncio.wait_for(
+                    asyncio.to_thread(self._prepare_device_sync, did),
+                    timeout=15.0,
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(device.run_action, action),
+                    timeout=15.0,
+                )
+            self.data_manager.update_state(last_control_error="", last_control_device=device_name or did)
+        except Exception as e:
+            self._handle_control_exception(e, device_name or did)
+
     def _handle_control_exception(self, e: Exception, device_name: str):
         if isinstance(e, asyncio.TimeoutError):
             self.data_manager.update_state(last_control_error="控制超时", last_control_device=device_name)
@@ -529,7 +546,7 @@ class MiHomeClient:
         elif isinstance(e, DeviceNotFoundError):
             self.data_manager.update_state(last_control_error="DID不存在", last_control_device=device_name)
             raise MiHomeControlError("device_not_found") from e
-        elif isinstance(e, DeviceSetError):
+        elif isinstance(e, (DeviceSetError, DeviceActionError)):
             self.data_manager.update_state(last_control_error=f"被拒: {e}", last_control_device=device_name)
             raise MiHomeControlError("device_rejected") from e
         elif isinstance(e, APIError):
