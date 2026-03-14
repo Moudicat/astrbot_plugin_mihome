@@ -143,6 +143,53 @@ class MiHomeClient:
             last_scene_error="",
         )
 
+    def _extract_qr_url_from_buffer(self, buffer_text: str) -> str:
+        """
+        从 stdout 缓冲区中提取二维码登录链接。
+        需要兼容：
+        1. URL 被拆成多行输出
+        2. URL 后面紧跟 DEBUG/INFO 日志
+        """
+        if not buffer_text:
+            return ""
+
+        compact = buffer_text.replace("\r", "").replace("\n", "")
+
+        match = re.search(
+            r'(https://account\.xiaomi\.com/pass/qr/login\?[^\s\'"]+)',
+            compact,
+        )
+        if not match:
+            return ""
+
+        url = match.group(1).strip()
+
+        # 切掉可能拼接进来的日志尾巴
+        tail_markers = [
+            "DEBUG:",
+            "INFO:",
+            "[WORKER",
+            "urllib3.",
+            "Starting new HTTPS connection",
+            "HTTP/1.1",
+        ]
+        for marker in tail_markers:
+            pos = url.find(marker)
+            if pos > 0:
+                url = url[:pos].strip()
+
+        # 防御性裁剪，避免把一些明显非 URL 内容拼进去
+        weird_markers = [
+            "也可以访问链接查看二维码图片:",
+            "请使用米家APP扫描下方二维码",
+        ]
+        for marker in weird_markers:
+            pos = url.find(marker)
+            if pos > 0:
+                url = url[:pos].strip()
+
+        return url
+
     async def get_login_status(self) -> Dict[str, Any]:
         state = self.data_manager.load_state()
         return {
@@ -221,7 +268,7 @@ class MiHomeClient:
                         break
 
                     text = chunk.decode("utf-8", errors="replace")
-                    full_buffer = (full_buffer + text)[-4096:]
+                    full_buffer = (full_buffer + text)[-16384:]
 
                     if text.strip():
                         for line in text.split("\n"):
@@ -229,37 +276,14 @@ class MiHomeClient:
                                 logger.debug(f"[Sandbox] {line.strip()}")
 
                     if not qr_found:
-                        for raw_line in text.splitlines():
-                            line = raw_line.strip()
-                            if not line:
-                                continue
-
-                            match = re.search(
-                                r'二维码图片:\s*(https://account\.xiaomi\.com/pass/qr/login\?[^\s\'"]+)',
-                                line,
-                            )
-                            if not match:
-                                match = re.search(
-                                    r'(https://account\.xiaomi\.com/pass/qr/login\?[^\s\'"]+)',
-                                    line,
-                                )
-
-                            if match:
-                                url = match.group(1).strip()
-
-                                for sep in ("DEBUG:", "INFO:", "[Sandbox]"):
-                                    pos = url.find(sep)
-                                    if pos > 0:
-                                        url = url[:pos].strip()
-
-                                if "ticket=" in url and "dc=" in url and "sid=" in url:
-                                    qr_found = True
-                                    logger.info("[MiHome] 成功提取完整登录链接。")
-                                    if asyncio.iscoroutinefunction(qr_callback):
-                                        await qr_callback(url)
-                                    else:
-                                        qr_callback(url)
-                                    break
+                        url = self._extract_qr_url_from_buffer(full_buffer)
+                        if url and "ticket=" in url and "dc=" in url and "sid=" in url:
+                            qr_found = True
+                            logger.info("[MiHome] 成功提取完整登录链接。")
+                            if asyncio.iscoroutinefunction(qr_callback):
+                                await qr_callback(url)
+                            else:
+                                qr_callback(url)
 
             try:
                 await asyncio.wait_for(
