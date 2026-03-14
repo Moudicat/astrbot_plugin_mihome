@@ -39,7 +39,7 @@ from .device_profiles import (
 PLUGIN_NAME = "astrbot_plugin_mihome"
 
 
-@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "7.0.0")
+@register(PLUGIN_NAME, "Ryan", "米家云端智能管家", "6.5.0")
 class MiHomeControlPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -134,6 +134,15 @@ class MiHomeControlPlugin(Star):
         did_to_model = state.get("did_to_model", {})
         return str(did_to_model.get(did, "")).strip()
 
+    def _get_cached_scenes(self) -> List[Dict[str, Any]]:
+        state = self.data_manager.load_state()
+        scenes = state.get("scenes", [])
+        return scenes if isinstance(scenes, list) else []
+
+    def _get_scene_cache_updated_at(self) -> str:
+        state = self.data_manager.load_state()
+        return str(state.get("scene_cache_updated_at", "")).strip()
+
     def _format_scene_line(self, idx: int, scene: Dict[str, Any]) -> str:
         scene_name = scene.get("scene_name") or "未命名场景"
         scene_id = scene.get("scene_id") or "unknown"
@@ -143,21 +152,22 @@ class MiHomeControlPlugin(Star):
             return f"{idx}. {scene_name}  [scene_id={scene_id}]  (家庭: {home_name} / {home_id})"
         return f"{idx}. {scene_name}  [scene_id={scene_id}]  (家庭: {home_name})"
 
-    async def _resolve_scene_query(self, query: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    async def _resolve_scene_query(self, query: str, prefer_cache: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         query = str(query or "").strip()
         if not query:
             return None, "empty"
 
-        scenes = await self.client.get_scenes()
+        scenes = self._get_cached_scenes() if prefer_cache else []
+        if not scenes:
+            scenes = await self.client.get_scenes()
+
         if not scenes:
             return None, "empty_list"
 
-        # 1. scene_id 精确匹配
         exact_id = [s for s in scenes if str(s.get("scene_id", "")).strip() == query]
         if exact_id:
             return exact_id[0], None
 
-        # 2. 场景名精确匹配
         exact_name = [s for s in scenes if str(s.get("scene_name", "")).strip() == query]
         if len(exact_name) == 1:
             return exact_name[0], None
@@ -207,7 +217,8 @@ class MiHomeControlPlugin(Star):
             f"- 凭证存在: {s['auth_exists']}\n"
             f"- 登录异常: {s['last_login_error'] or '无'}\n"
             f"- 共享异常: {s['last_shared_error'] or '无'}\n"
-            f"- 最近控制: {last_device} ({last_result})"
+            f"- 最近控制: {last_device} ({last_result})\n"
+            f"- 场景缓存时间: {s.get('scene_cache_updated_at') or '无'}"
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -305,7 +316,7 @@ class MiHomeControlPlugin(Star):
             return
 
         try:
-            scene, err = await self._resolve_scene_query(content)
+            scene, err = await self._resolve_scene_query(content, prefer_cache=False)
             if err == "empty_list":
                 yield event.plain_result("⚠️ 当前账号下未发现可执行场景。")
                 return
@@ -327,7 +338,6 @@ class MiHomeControlPlugin(Star):
             home_id = scene.get("home_id") or ""
 
             yield event.plain_result(f"⏳ 正在执行米家场景【{scene_name}】...")
-
             await self.client.run_scene(
                 scene_id=scene_id,
                 home_id=home_id,
@@ -826,10 +836,51 @@ class MiHomeControlPlugin(Star):
         except Exception:
             yield event.plain_result("❌ 内部错误。")
 
+    @filter.llm_tool(name="list_cached_mihome_scenes")
+    async def list_cached_mihome_scenes_tool(self, event: AstrMessageEvent):
+        """
+        读取本插件缓存的米家场景列表（只读工具）。
+        使用限制：
+        1. 仅用于查询当前已同步到插件缓存中的米家场景，不会实时访问云端。
+        2. 当用户明确提到“场景”、要求执行家居控制、或你需要确认可执行场景名称时，才应调用本工具。
+        3. 不要因为普通寒暄或自然表达（例如“晚安”“我要睡了”“我出门了”）就主动调用本工具。
+        4. 若缓存为空，应提示用户先手动执行 /米家场景列表 完成同步。
+        """
+        if not self._scene_tool_enabled():
+            yield event.plain_result("米家场景 Tool 当前未启用。")
+            return
+
+        scenes = self._get_cached_scenes()
+        updated_at = self._get_scene_cache_updated_at()
+
+        if not scenes:
+            yield event.plain_result("当前没有已缓存的米家场景列表，请先手动执行 /米家场景列表 同步场景。")
+            return
+
+        lines = [f"当前已缓存 {len(scenes)} 个米家场景："]
+        for idx, item in enumerate(scenes, 1):
+            lines.append(self._format_scene_line(idx, item))
+        if updated_at:
+            lines.append(f"\n缓存更新时间：{updated_at}")
+        yield event.plain_result("\n".join(lines))
+
     @filter.llm_tool(name="execute_mihome_scene")
     async def execute_mihome_scene_tool(self, event: AstrMessageEvent, scene_name: str):
         """
         执行米家云端场景。
+        使用限制（必须遵守）：
+        1. 仅当用户明确要求执行某个场景，或明确表达家居电器控制意图时，才可以调用本工具。
+        2. 允许的典型情况包括：
+           - “执行晚安场景”
+           - “帮我关下灯”
+           - “帮我把净化器关了”
+           - “执行离家场景”
+        3. 禁止在以下情况下调用本工具：
+           - 普通寒暄或礼貌表达，如“晚安”“早安”
+           - 单纯状态表达，如“我要睡了”“我要出门了”
+           - 没有明确家居控制意图的日常聊天
+        4. 若不确定应执行哪个场景，应先调用 list_cached_mihome_scenes 查询缓存场景列表，再决定是否执行。
+        5. 若缓存中存在同名场景导致歧义，不应擅自执行，应提示用户改用更明确的场景名或 scene_id。
         Args:
             scene_name(string): 需要执行的米家场景名称或 scene_id
         """
@@ -838,13 +889,13 @@ class MiHomeControlPlugin(Star):
             return
 
         try:
-            scene, err = await self._resolve_scene_query(scene_name)
+            scene, err = await self._resolve_scene_query(scene_name, prefer_cache=True)
 
             if err == "empty_list":
-                yield event.plain_result("当前账号下没有可执行的米家场景。")
+                yield event.plain_result("当前没有已缓存的米家场景列表，请先手动执行 /米家场景列表 同步场景。")
                 return
             if err == "not_found":
-                yield event.plain_result(f"未找到米家场景：{scene_name}")
+                yield event.plain_result(f"未在缓存中找到米家场景：{scene_name}。请先确认场景名，或先执行 /米家场景列表 刷新。")
                 return
             if err and err not in ("empty", "empty_list", "not_found"):
                 yield event.plain_result(err)
