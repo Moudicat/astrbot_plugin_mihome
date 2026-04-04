@@ -359,8 +359,13 @@ class MiHomeControlPlugin(Star):
 
             res = [f"✅ 找到 {len(devs)} 个设备："]
             for i, d in enumerate(devs, 1):
-                did_str = str(d.get("did")).strip()
+                did_str = str(d.get("did", "")).strip()
                 cloud_name = str(d.get("name", "未知设备")).strip() or "未知设备"
+
+                model_str = str(d.get("model", "")).strip()
+                if not model_str and did_str:
+                    model_str = self._get_model_by_did(did_str)
+                model_str = model_str or "未知"
 
                 is_online = d.get("isOnline")
                 if is_online is True:
@@ -368,15 +373,16 @@ class MiHomeControlPlugin(Star):
                 elif is_online is False:
                     status_icon = "🔴"
                 else:
-                    status_icon = ""
+                    status_icon = "⚪"
 
                 aliases = [k for k, v in device_map.items() if str(v).strip() == did_str]
                 alias_str = "/".join(aliases) if aliases else "未配置别名"
 
-                if status_icon:
-                    res.append(f"{i}. 【{alias_str}】({cloud_name}) [{status_icon}] ({did_str})")
-                else:
-                    res.append(f"{i}. 【{alias_str}】({cloud_name}) [] ({did_str})")
+                res.append(
+                    f"{i}. 【{alias_str}】({cloud_name}) [{status_icon}]\n"
+                    f"   DID: {did_str or '未知'}\n"
+                    f"   model: {model_str}"
+                )
 
             res.append("\n💡 提示: 发送 /米家详情 [别名] 可查看设备实况，发送 /米家帮助 [别名] 获取控制示例，发送 /米家场景列表 查看云端场景。")
             yield event.plain_result("\n".join(res))
@@ -1010,7 +1016,7 @@ class MiHomeControlPlugin(Star):
         使用限制：
         1. 仅用于查询当前已同步到插件缓存中的米家场景，不会实时访问云端。
         2. 当用户明确提到“场景”、要求执行家居控制、或你需要确认可执行场景名称时，才应调用本工具。
-        3. 不要因为普通寒暄或自然表达（例如“晚安”“我要睡了”“我出门了”）就主动调用本工具。
+        3. 不要因为普通寒暄或自然表达（例如“晚安”“早安”“我要睡了”“我出门了”）就主动调用本工具。
         4. 若缓存为空，应提示用户先手动执行 /米家场景列表 完成同步。
         """
         if not self._scene_tool_enabled():
