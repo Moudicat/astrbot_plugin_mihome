@@ -28,6 +28,9 @@ from .device_profiles import (
     CATEGORY_VACUUM,
     CATEGORY_WATER_HEATER,
     CATEGORY_ROUTER,
+    CATEGORY_SWITCH,
+    CATEGORY_GAS_SENSOR,
+    CATEGORY_DOOR_SENSOR,
     get_device_prop_map,
     get_device_val_map,
     get_device_display_map,
@@ -56,6 +59,9 @@ READONLY_ALLOWED_CATEGORIES = {
     CATEGORY_VACUUM,
     CATEGORY_WATER_HEATER,
     CATEGORY_ROUTER,
+    CATEGORY_SWITCH,
+    CATEGORY_GAS_SENSOR,
+    CATEGORY_DOOR_SENSOR,
 }
 
 
