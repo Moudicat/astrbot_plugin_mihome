@@ -473,7 +473,10 @@ CATEGORY_PROFILES = {
             "开关": "on",
             "模式": "mode",
         },
-        "value_map": {},
+        "value_map": {
+            "开": True,
+            "关": False
+        },
         "display_map": {
             "on": "电源状态",
             "mode": "运行模式",
