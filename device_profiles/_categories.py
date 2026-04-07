@@ -501,6 +501,10 @@ CATEGORY_PROFILES = {
             "illumination": "光照强度",
             "battery_level": "电池电量",
         },
+        "value_display_map": {
+            "contact_state": {True: "已关闭", False: "已打开"},
+            "illumination": {1: "弱", 2: "强"},
+        },
         "detail_writable": [],
         "detail_readable": ["contact_state", "illumination", "battery_level"],
         "detail_actions": [],
@@ -513,18 +517,30 @@ CATEGORY_PROFILES = {
     CATEGORY_GAS_SENSOR: {
         "prop_map": {
             "消音": "mute",
+            "自检": "self_inspection",
         },
-        "value_map": {},
+        "value_map": {
+            "开": 1,
+        },
         "display_map": {
-            "status": "报警状态",
+            "status": "工作状态",
             "gas_concentration": "天然气浓度(%LEL)",
+        },
+        "value_display_map": {
+            "status": {0: "预热", 1: "监测正常", 2: "自检中", 3: "传感器寿命到期", 4: "设备故障", 5: "天然气泄漏报警"},
         },
         "detail_writable": ["self_inspection", "mute"],
         "detail_readable": ["status", "gas_concentration"],
         "detail_actions": [],
         "action_map": {},
-        "help_examples": {},
+        "help_examples": {
+            "消音": ["开"],
+            "自检": ["开"],
+        },
         "action_examples": [],
-        "help_hints": {},
+        "help_hints": {
+            "消音": "下发1启动远程消音（仅报警时有效）",
+            "自检": "下发1触发一次APP远程自检",
+        },
     },
 }

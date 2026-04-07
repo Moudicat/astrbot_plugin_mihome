@@ -42,6 +42,7 @@ from ._resolver import (  # noqa: F401
     get_device_prop_map,
     get_device_val_map,
     get_device_display_map,
+    get_device_value_display_map,
     get_device_action_map,
     get_reverse_prop_map,
     get_reverse_action_map,

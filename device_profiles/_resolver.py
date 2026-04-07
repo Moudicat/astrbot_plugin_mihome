@@ -76,6 +76,12 @@ def get_device_display_map(model: str = "", category: str = "") -> Dict[str, str
     return {**GLOBAL_DISPLAY_MAP, **profile.get("display_map", {})}
 
 
+def get_device_value_display_map(model: str = "", category: str = "") -> Dict[str, Dict]:
+    """返回 {属性名: {原始值: 友好展示值}} 映射，用于将原始属性值翻译为中文。"""
+    profile = resolve_profile(model=model, category=category)
+    return {k: dict(v) for k, v in profile.get("value_display_map", {}).items()}
+
+
 def get_device_action_map(model: str = "", category: str = "") -> Dict[str, str]:
     profile = resolve_profile(model=model, category=category)
     return profile.get("action_map", {})

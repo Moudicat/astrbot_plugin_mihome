@@ -34,6 +34,7 @@ from .device_profiles import (
     get_device_prop_map,
     get_device_val_map,
     get_device_display_map,
+    get_device_value_display_map,
     get_device_action_map,
     get_reverse_prop_map,
     get_reverse_action_map,
@@ -259,6 +260,7 @@ class MiHomeControlPlugin(Star):
 
         readable_keys = get_device_detail_readable_keys(model=model, category=effective_category)
         display_map = get_device_display_map(model=model, category=effective_category)
+        value_display_map = get_device_value_display_map(model=model, category=effective_category)
 
         if not readable_keys:
             return (
@@ -287,7 +289,8 @@ class MiHomeControlPlugin(Star):
             translated_items = []
             for k, v in readables.items():
                 friendly_name = display_map.get(k, k)
-                translated_items.append((friendly_name, v))
+                friendly_val = value_display_map.get(k, {}).get(v, v)
+                translated_items.append((friendly_name, friendly_val))
             translated_items.sort(key=lambda x: x[0])
 
             for idx, (name, val) in enumerate(translated_items):
@@ -551,6 +554,7 @@ class MiHomeControlPlugin(Star):
             return
 
         display_map = get_device_display_map(model=model, category=category)
+        value_display_map = get_device_value_display_map(model=model, category=category)
         reverse_prop_map = get_reverse_prop_map(model=model, category=category)
         reverse_action_map = get_reverse_action_map(model=model, category=category)
         fallback_writables = get_device_detail_writable_keys(model=model, category=category)
@@ -608,7 +612,8 @@ class MiHomeControlPlugin(Star):
                 translated_items = []
                 for k, v in readables.items():
                     friendly_name = display_map.get(k, k)
-                    translated_items.append((friendly_name, v))
+                    friendly_val = value_display_map.get(k, {}).get(v, v)
+                    translated_items.append((friendly_name, friendly_val))
                 translated_items.sort(key=lambda x: x[0])
                 for idx, (name, val) in enumerate(translated_items):
                     prefix = " └─ " if idx == len(translated_items) - 1 else " ├─ "
