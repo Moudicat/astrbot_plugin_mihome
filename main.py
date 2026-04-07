@@ -145,6 +145,34 @@ class MiHomeControlPlugin(Star):
 
         return val_str
 
+    def _translate_readable_value(self, key: str, raw_value: Any, value_display_map: Dict[str, Dict]) -> Any:
+        """对实时读取值做宽松映射，兼容字符串化后的数字/布尔值。"""
+        mapping = value_display_map.get(key, {})
+        if not mapping:
+            return raw_value
+
+        try:
+            if raw_value in mapping:
+                return mapping[raw_value]
+        except TypeError:
+            pass
+
+        parsed_value = self._parse_value(raw_value)
+        try:
+            if parsed_value in mapping:
+                return mapping[parsed_value]
+        except TypeError:
+            pass
+
+        raw_str = str(raw_value).strip()
+        parsed_str = str(parsed_value).strip()
+        for map_key, map_val in mapping.items():
+            key_str = str(map_key).strip()
+            if key_str == raw_str or key_str == parsed_str:
+                return map_val
+
+        return raw_value
+
     def _normalize_action_token(self, s: str) -> str:
         return str(s or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -289,7 +317,7 @@ class MiHomeControlPlugin(Star):
             translated_items = []
             for k, v in readables.items():
                 friendly_name = display_map.get(k, k)
-                friendly_val = value_display_map.get(k, {}).get(v, v)
+                friendly_val = self._translate_readable_value(k, v, value_display_map)
                 translated_items.append((friendly_name, friendly_val))
             translated_items.sort(key=lambda x: x[0])
 
@@ -612,7 +640,7 @@ class MiHomeControlPlugin(Star):
                 translated_items = []
                 for k, v in readables.items():
                     friendly_name = display_map.get(k, k)
-                    friendly_val = value_display_map.get(k, {}).get(v, v)
+                    friendly_val = self._translate_readable_value(k, v, value_display_map)
                     translated_items.append((friendly_name, friendly_val))
                 translated_items.sort(key=lambda x: x[0])
                 for idx, (name, val) in enumerate(translated_items):
