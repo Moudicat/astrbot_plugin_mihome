@@ -14,6 +14,8 @@ from ._constants import (
     CATEGORY_BODY_SCALE,
     CATEGORY_COOKER,
     CATEGORY_PURIFIER,
+    CATEGORY_ROUTER,
+    CATEGORY_TH_SENSOR,
     CATEGORY_VACUUM,
     CATEGORY_WATER_HEATER,
 )
@@ -244,7 +246,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         },
     },
 
-    # ---- 体脂秤 (保留：大量 hidden_props) ----
+    # ---- 体脂秤 ----
     "yunmai.scales.ms103": {
         "category": CATEGORY_BODY_SCALE,
         "hidden_props": [
@@ -281,7 +283,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         "help_hints": {},
     },
 
-    # ---- 空气净化器 (保留：特有亮度档位 + 风速范围) ----
+    # ---- 空气净化器 ----
     "zhimi.airp.rma3": {
         "category": CATEGORY_PURIFIER,
         "hidden_props": [
@@ -353,7 +355,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         },
     },
 
-    # ---- 扫地机 (保留：大量 hidden_props + 扩展值映射) ----
+    # ---- 米家扫拖机器人 ----
     "xiaomi.vacuum.ov21cn": {
         "category": CATEGORY_VACUUM,
         "hidden_props": [
@@ -605,7 +607,7 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
         },
     },
 
-    # ---- 恒温电水壶 (保留：特有 hidden_props + 加热模式值) ----
+    # ---- 米家恒温电水壶3Pro ----
     "xiaomi.kettle.ym3pro": {
         "category": CATEGORY_WATER_HEATER,
         "hidden_props": [
@@ -693,5 +695,51 @@ MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
             "保温温度": "支持 40~90°C",
             "定温时长": "支持 60~1440 分钟",
         },
+    },
+
+    # ---- 米家智能温湿度计3 ----
+    "miaomiaoce.sensor_ht.t9": {
+        "category": CATEGORY_TH_SENSOR,
+        "hidden_props": [],
+        "prop_map": {},
+        "value_map": {},
+        "display_map": {
+            "battery_level": "电池电量",
+            "temperature": "当前温度",
+            "relative_humidity": "当前湿度",
+        },
+        "detail_writable": [],
+        "detail_readable": [
+            "temperature",
+            "relative_humidity",
+            "battery_level",
+        ],
+        "action_map": {},
+        "detail_actions": [],
+        "help_examples": {},
+        "action_examples": [],
+        "help_hints": {},
+    },
+
+    # ---- 小米AIoT路由器AX3600 ----
+    "xiaomi.router.r3600": {
+        "category": CATEGORY_ROUTER,
+        "hidden_props": [],
+        "prop_map": {},
+        "value_map": {},
+        "display_map": {
+            "download_speed": "下载速率",
+            "connected_device_number": "连接设备数",
+        },
+        "detail_writable": [],
+        "detail_readable": [
+            "download_speed",
+            "connected_device_number",
+        ],
+        "action_map": {},
+        "detail_actions": [],
+        "help_examples": {},
+        "action_examples": [],
+        "help_hints": {},
     },
 }
